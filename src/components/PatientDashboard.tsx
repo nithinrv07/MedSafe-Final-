@@ -3,6 +3,7 @@ import { Shield, Key, FileText, Lock, Plus, Check, X, LogOut, Radio, HelpCircle,
 import { UserProfile, MedicalRecord, AccessRequest, AuditLog } from '../types';
 import { encryptRecord, decryptRecord, generateHash, signRequest, checkDrugInteractions } from '../utils/cryptoSim';
 import EncryptionVisualizer from './EncryptionVisualizer';
+import Logo from './Logo';
 
 interface PatientDashboardProps {
   user: UserProfile;
@@ -35,7 +36,7 @@ export default function PatientDashboard({
   const [newDoctorName, setNewDoctorName] = useState('');
   const [newDetails, setNewDetails] = useState('');
   const [newDrugs, setNewDrugs] = useState('');
-  const [newPhotoUrl, setNewPhotoUrl] = useState('');
+  const [newPhotoUrls, setNewPhotoUrls] = useState<string[]>([]);
 
   // Local decryptions triggers for patient's own vault
   const [decryptedRecordIds, setDecryptedRecordIds] = useState<Record<string, string>>({});
@@ -117,18 +118,20 @@ export default function PatientDashboard({
   });
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        setNewPhotoUrl(reader.result as string);
-        onAddLog(
-          'Diagnostic Image Uploaded',
-          'SUCCESS',
-          `Selected local patient scan document: ${file.name} (${Math.round(file.size / 1024)} KB) and processed key buffers ready for browser pre-encryption.`
-        );
-      };
-      reader.readAsDataURL(file);
+    const files = e.target.files;
+    if (files && files.length > 0) {
+      Array.from(files).forEach((file: File) => {
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          setNewPhotoUrls((prev) => [...prev, reader.result as string]);
+          onAddLog(
+            'Diagnostic Image Uploaded',
+            'SUCCESS',
+            `Selected local patient scan document: ${file.name} (${Math.round(file.size / 1024)} KB) and processed key buffers ready for browser pre-encryption.`
+          );
+        };
+        reader.readAsDataURL(file);
+      });
     }
   };
 
@@ -163,7 +166,8 @@ export default function PatientDashboard({
       encryptedContent: simulatedEncrypted,
       hash: simulatedHash,
       medicines: finalMedicinesList,
-      photoUrl: newPhotoUrl || undefined,
+      photoUrl: newPhotoUrls[0] || undefined,
+      photoUrls: newPhotoUrls,
     };
 
     setTimeout(() => {
@@ -178,7 +182,7 @@ export default function PatientDashboard({
       setNewDoctorName('');
       setNewDetails('');
       setNewDrugs('');
-      setNewPhotoUrl('');
+      setNewPhotoUrls([]);
       setShowAddForm(false);
       setVisualData(null);
     }, 2800);
@@ -266,8 +270,8 @@ export default function PatientDashboard({
       <aside className="w-full md:w-64 bg-white border-b md:border-b-0 md:border-r border-zinc-200 flex flex-col justify-between shrink-0 shadow-sm">
         <div className="p-6">
           <div className="flex items-center gap-2 mb-8 animate-fade-in">
-            <div className="relative flex h-10 w-10 items-center justify-center rounded-xl bg-zinc-900 shadow-sm overflow-hidden">
-              <img src="/logo.jpeg" alt="MedSafe Logo" className="object-cover w-full h-full" />
+            <div className="relative flex h-10 w-10 items-center justify-center rounded-xl bg-zinc-900 shadow-sm overflow-hidden text-teal-400">
+              <Logo className="object-contain w-full h-full p-1" />
             </div>
             <div>
               <h2 className="font-display font-bold text-zinc-900 leading-tight uppercase text-sm tracking-wide">
@@ -476,20 +480,21 @@ export default function PatientDashboard({
                   {/* Photo attachment section */}
                   <div className="space-y-2.5 pt-1.5 border-t border-zinc-100">
                     <label className="block text-[10px] font-mono text-zinc-500 uppercase font-semibold">
-                      Attach Clinical Photo Card or Scan Document
+                      Attach Clinical Photo Card or Scan Document (Multiple Supported)
                     </label>
                     
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       {/* Drag & Drop File Selector area */}
-                      <div className="border border-dashed border-zinc-200 hover:border-zinc-350 rounded-xl p-4 bg-zinc-55 hover:bg-zinc-50 transition-all text-center relative flex flex-col justify-center items-center group min-h-[110px] bg-zinc-50/50">
+                      <div className="border border-dashed border-zinc-200 hover:border-zinc-350 rounded-xl p-4 bg-zinc-50 hover:bg-zinc-100 transition-all text-center relative flex flex-col justify-center items-center group min-h-[110px] bg-zinc-50/50">
                         <UploadCloud className="h-6 w-6 text-zinc-400 mb-1.5 group-hover:text-zinc-650 transition-colors" />
                         <p className="text-[10px] font-medium text-zinc-800">
-                          Drag & drop or <span className="text-teal-600 font-bold hover:underline cursor-pointer">browse file</span>
+                          Drag & drop or <span className="text-teal-600 font-bold hover:underline cursor-pointer">browse files</span>
                         </p>
                         <p className="text-[9px] text-zinc-400 mt-0.5">JPEG, PNG scans up to 10MB</p>
                         <input
                           type="file"
                           accept="image/*"
+                          multiple
                           onChange={handleFileChange}
                           className="absolute inset-0 opacity-0 cursor-pointer w-full h-full"
                         />
@@ -502,40 +507,40 @@ export default function PatientDashboard({
                           <button
                             type="button"
                             onClick={() => {
-                              setNewPhotoUrl('https://picsum.photos/seed/patient_xray/600/450');
+                              setNewPhotoUrls(prev => [...prev, 'https://picsum.photos/seed/patient_xray/600/450']);
                               onAddLog('Diagnostic Preset Loaded', 'SUCCESS', 'Patient loaded high-resolution chest X-Ray (Diagnostic Template Preset).');
                             }}
-                            className={`p-1.5 rounded-lg border text-left flex items-center gap-1 transition-all bg-white hover:bg-zinc-50 cursor-pointer ${newPhotoUrl.includes('patient_xray') ? 'border-teal-500 ring-1 ring-teal-500 text-teal-850 font-bold' : 'border-zinc-250 text-zinc-650'}`}
+                            className={`p-1.5 rounded-lg border text-left flex items-center gap-1 transition-all bg-white hover:bg-zinc-55 cursor-pointer ${newPhotoUrls.some(url => url.includes('patient_xray')) ? 'border-teal-500 ring-1 ring-teal-500 text-teal-850 font-bold' : 'border-zinc-250 text-zinc-650'}`}
                           >
                             🩻 Chest X-Ray scan
                           </button>
                           <button
                             type="button"
                             onClick={() => {
-                              setNewPhotoUrl('https://picsum.photos/seed/patient_mri/600/450');
+                              setNewPhotoUrls(prev => [...prev, 'https://picsum.photos/seed/patient_mri/600/450']);
                               onAddLog('Diagnostic Preset Loaded', 'SUCCESS', 'Patient loaded high-resolution Cerebrum MRI Scan.');
                             }}
-                            className={`p-1.5 rounded-lg border text-left flex items-center gap-1 transition-all bg-white hover:bg-zinc-50 cursor-pointer ${newPhotoUrl.includes('patient_mri') ? 'border-teal-500 ring-1 ring-teal-500 text-teal-850 font-bold' : 'border-zinc-250 text-zinc-650'}`}
+                            className={`p-1.5 rounded-lg border text-left flex items-center gap-1 transition-all bg-white hover:bg-zinc-55 cursor-pointer ${newPhotoUrls.some(url => url.includes('patient_mri')) ? 'border-teal-500 ring-1 ring-teal-500 text-teal-850 font-bold' : 'border-zinc-250 text-zinc-650'}`}
                           >
                             🧠 Brain MRI scan
                           </button>
                           <button
                             type="button"
                             onClick={() => {
-                              setNewPhotoUrl('https://picsum.photos/seed/patient_ecg/600/450');
+                              setNewPhotoUrls(prev => [...prev, 'https://picsum.photos/seed/patient_ecg/600/450']);
                               onAddLog('Diagnostic Preset Loaded', 'SUCCESS', 'Patient loaded clinical Einthoven Lead-II ECG paper sweep chart.');
                             }}
-                            className={`p-1.5 rounded-lg border text-left flex items-center gap-1 transition-all bg-white hover:bg-zinc-50 cursor-pointer ${newPhotoUrl.includes('patient_ecg') ? 'border-teal-500 ring-1 ring-teal-500 text-teal-850 font-bold' : 'border-zinc-250 text-zinc-650'}`}
+                            className={`p-1.5 rounded-lg border text-left flex items-center gap-1 transition-all bg-white hover:bg-zinc-55 cursor-pointer ${newPhotoUrls.some(url => url.includes('patient_ecg')) ? 'border-teal-500 ring-1 ring-teal-500 text-teal-850 font-bold' : 'border-zinc-250 text-zinc-650'}`}
                           >
                             📈 Einthoven ECG chart
                           </button>
                           <button
                             type="button"
                             onClick={() => {
-                              setNewPhotoUrl('https://picsum.photos/seed/patient_prescription/600/450');
+                              setNewPhotoUrls(prev => [...prev, 'https://picsum.photos/seed/patient_prescription/600/450']);
                               onAddLog('Diagnostic Preset Loaded', 'SUCCESS', 'Patient loaded physical prescription paper slip receipt.');
                             }}
-                            className={`p-1.5 rounded-lg border text-left flex items-center gap-1 transition-all bg-white hover:bg-zinc-50 cursor-pointer ${newPhotoUrl.includes('patient_prescription') ? 'border-teal-500 ring-1 ring-teal-500 text-teal-850 font-bold' : 'border-zinc-250 text-zinc-650'}`}
+                            className={`p-1.5 rounded-lg border text-left flex items-center gap-1 transition-all bg-white hover:bg-zinc-55 cursor-pointer ${newPhotoUrls.some(url => url.includes('patient_prescription')) ? 'border-teal-500 ring-1 ring-teal-500 text-teal-850 font-bold' : 'border-zinc-250 text-zinc-650'}`}
                           >
                             📄 Prescription receipt
                           </button>
@@ -543,32 +548,40 @@ export default function PatientDashboard({
                       </div>
                     </div>
 
-                    {/* Pre-upload attachment banner indicator */}
-                    {newPhotoUrl && (
-                      <div className="p-2.5 bg-teal-50/40 border border-teal-200 rounded-xl flex items-center justify-between animate-fade-in">
-                        <div className="flex items-center gap-2.5 min-w-0">
-                          <div className="w-10 h-10 rounded border border-zinc-200 overflow-hidden shrink-0">
-                            <img
-                              src={newPhotoUrl}
-                              alt="Secure pre-encryption preview"
-                              className="w-full h-full object-cover"
-                              referrerPolicy="no-referrer"
-                            />
-                          </div>
-                          <div className="min-w-0">
-                            <span className="text-[9px] font-mono text-teal-700 font-bold block uppercase leading-none mb-1">✓ Active Image Staged for Encrypt</span>
-                            <span className="text-[8px] font-mono text-zinc-450 truncate block max-w-[2400px] leading-none">
-                              {newPhotoUrl.startsWith('data:') ? 'Custom Patient Uploaded Base64 Scan Data' : newPhotoUrl}
-                            </span>
-                          </div>
+                    {/* Pre-upload attachment banner indicators (multiple) */}
+                    {newPhotoUrls.length > 0 && (
+                      <div className="space-y-2">
+                        <span className="text-[9px] font-mono text-teal-700 font-bold block uppercase">
+                          ✓ Staged Attachments ({newPhotoUrls.length})
+                        </span>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                          {newPhotoUrls.map((url, idx) => (
+                            <div key={idx} className="p-2.5 bg-teal-50/45 border border-teal-200 rounded-xl flex items-center justify-between animate-fade-in text-xs">
+                              <div className="flex items-center gap-2 min-w-0">
+                                <div className="w-8 h-8 rounded border border-zinc-200 overflow-hidden shrink-0">
+                                  <img
+                                    src={url}
+                                    alt={`Secure preview ${idx + 1}`}
+                                    className="w-full h-full object-cover"
+                                    referrerPolicy="no-referrer"
+                                  />
+                                </div>
+                                <div className="min-w-0 text-[10px]">
+                                  <span className="text-[8px] font-mono text-zinc-450 truncate block max-w-[120px] leading-none">
+                                    {url.startsWith('data:') ? `Custom Scan Document #${idx + 1}` : `Mock Preset Image #${idx + 1}`}
+                                  </span>
+                                </div>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => setNewPhotoUrls((prev) => prev.filter((_, i) => i !== idx))}
+                                className="px-2 py-1 rounded bg-white hover:bg-red-50 text-red-650 hover:text-red-700 font-mono text-[9px] border border-zinc-200 hover:border-red-200 cursor-pointer transition-colors"
+                              >
+                                Remove
+                              </button>
+                            </div>
+                          ))}
                         </div>
-                        <button
-                          type="button"
-                          onClick={() => setNewPhotoUrl('')}
-                          className="px-2 py-1 rounded bg-white hover:bg-red-50 text-red-650 hover:text-red-700 font-mono text-[9px] border border-zinc-200 hover:border-red-200 cursor-pointer transition-colors"
-                        >
-                          Delete Card
-                        </button>
                       </div>
                     )}
                   </div>
@@ -630,31 +643,40 @@ export default function PatientDashboard({
                               <p className="leading-relaxed font-sans font-medium">{decryptedRecordIds[rec.id]}</p>
                             </div>
 
-                            {rec.photoUrl && (
-                              <div className="border border-zinc-200 rounded-xl bg-zinc-50 overflow-hidden shadow-sm max-w-sm">
-                                <div className="p-2 border-b border-zinc-200 bg-white flex items-center justify-between">
-                                  <span className="text-[8px] font-mono text-zinc-550 uppercase font-bold flex items-center gap-1">
-                                    <Image className="h-3 w-3 text-zinc-400" /> Clinical scan attachment
-                                  </span>
-                                  <button
-                                    onClick={() => setSelectedZoomPhoto(rec.photoUrl || null)}
-                                    className="p-1 hover:bg-zinc-150 rounded text-teal-650 hover:text-teal-800 cursor-pointer flex items-center gap-1 text-[9px] font-mono font-bold"
-                                  >
-                                    <ZoomIn className="h-3 w-3" /> Click to Zoom
-                                  </button>
-                                </div>
-                                <div className="relative group/pic aspect-video bg-zinc-150 cursor-pointer overflow-hidden" onClick={() => setSelectedZoomPhoto(rec.photoUrl || null)}>
-                                  <img
-                                    src={rec.photoUrl}
-                                    alt={rec.title}
-                                    className="w-full h-full object-cover group-hover:scale-103 transition-transform duration-300"
-                                    referrerPolicy="no-referrer"
-                                  />
-                                  <div className="absolute inset-0 bg-zinc-950/25 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                                    <span className="text-white text-[9px] font-mono bg-zinc-900/90 px-2 py-1 rounded-md font-bold">
-                                      Expand Display Scans
-                                    </span>
-                                  </div>
+                            {((rec.photoUrls && rec.photoUrls.length > 0) || rec.photoUrl) && (
+                              <div className="space-y-2 pt-2">
+                                <span className="text-[9px] font-mono text-zinc-500 uppercase font-bold">
+                                  Clinical Scan Attachments ({rec.photoUrls ? rec.photoUrls.length : 1})
+                                </span>
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                  {(rec.photoUrls && rec.photoUrls.length > 0 ? rec.photoUrls : [rec.photoUrl!]).map((photo, pIdx) => (
+                                    <div key={pIdx} className="border border-zinc-200 rounded-xl bg-zinc-50 overflow-hidden shadow-sm max-w-sm">
+                                      <div className="p-2 border-b border-zinc-200 bg-white flex items-center justify-between">
+                                        <span className="text-[8px] font-mono text-zinc-550 uppercase font-bold flex items-center gap-1">
+                                          <Image className="h-3 w-3 text-zinc-400" /> Scan #{pIdx + 1}
+                                        </span>
+                                        <button
+                                          onClick={() => setSelectedZoomPhoto(photo)}
+                                          className="p-1 hover:bg-zinc-150 rounded text-teal-650 hover:text-teal-800 cursor-pointer flex items-center gap-1 text-[9px] font-mono font-bold"
+                                        >
+                                          <ZoomIn className="h-3 w-3" /> Click to Zoom
+                                        </button>
+                                      </div>
+                                      <div className="relative group/pic aspect-video bg-zinc-150 cursor-pointer overflow-hidden" onClick={() => setSelectedZoomPhoto(photo)}>
+                                        <img
+                                          src={photo}
+                                          alt={`${rec.title} - scan ${pIdx + 1}`}
+                                          className="w-full h-full object-cover group-hover:scale-103 transition-transform duration-300"
+                                          referrerPolicy="no-referrer"
+                                        />
+                                        <div className="absolute inset-0 bg-zinc-950/25 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                                          <span className="text-white text-[9px] font-mono bg-zinc-900/90 px-2 py-1 rounded-md font-bold">
+                                            Expand Display Scans
+                                          </span>
+                                        </div>
+                                      </div>
+                                    </div>
+                                  ))}
                                 </div>
                               </div>
                             )}

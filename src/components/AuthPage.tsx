@@ -4,6 +4,7 @@ import { UserRole, UserProfile } from '../types';
 import { generateKeyPair } from '../utils/cryptoSim';
 import { auth } from '../firebase';
 import { signInWithEmailAndPassword, createUserWithEmailAndPassword } from 'firebase/auth';
+import Logo from './Logo';
 
 interface AuthPageProps {
   onBack: () => void;
@@ -331,8 +332,8 @@ export default function AuthPage({
             <ArrowLeft className="h-3.5 w-3.5" /> Back to Home
           </button>
           
-          <div className="mt-6 relative flex h-12 w-12 items-center justify-center rounded-2xl bg-zinc-900 shadow-sm overflow-hidden">
-            <img src="/logo.jpeg" alt="MedSafe Logo" className="object-cover w-full h-full" />
+          <div className="mt-6 relative flex h-12 w-12 items-center justify-center rounded-2xl bg-zinc-900 shadow-sm overflow-hidden text-teal-400">
+            <Logo className="object-contain w-full h-full p-1" />
           </div>
           <h2 className="mt-4 text-center text-2xl font-extrabold font-display text-teal-700 tracking-tight">
             {generatedKeys 

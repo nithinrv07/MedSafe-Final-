@@ -1,6 +1,7 @@
 import React from 'react';
 import { Shield, Key, EyeOff, Brain, FileKey, UserCheck, ArrowRight, Activity, Cpu, LogIn, Lock, Users, Radio } from 'lucide-react';
 import { motion } from 'motion/react';
+import Logo from './Logo';
 
 interface LandingPageProps {
   onGetStarted: () => void;
@@ -87,8 +88,8 @@ export default function LandingPage({ onGetStarted, onLogin }: LandingPageProps)
       <header id="landing-nav" className="relative z-10 w-full border-b border-blue-200/50 bg-blue-50/70 backdrop-blur-md shadow-sm px-6 py-4">
         <div className="max-w-7xl mx-auto flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="relative flex h-10 w-10 items-center justify-center rounded-xl shadow-sm overflow-hidden bg-zinc-900">
-              <img src="/logo.jpeg" alt="MedSafe Logo" className="object-contain w-full h-full p-1" />
+            <div className="relative flex h-10 w-10 items-center justify-center rounded-xl shadow-sm overflow-hidden bg-zinc-900 text-teal-400">
+              <Logo className="object-contain w-full h-full p-1" />
             </div>
             <div>
               <h1 className="font-display font-bold tracking-tight text-zinc-900 text-base md:text-md leading-tight uppercase">

@@ -30,6 +30,7 @@ export interface MedicalRecord {
   medicines: string[]; // List of drugs for AI scanner
   hash: string; // SHA-256 integrity simulation
   photoUrl?: string; // Optional patient record preview attachment photo
+  photoUrls?: string[]; // Optional patient record preview attachment photos (multiple support)
 }
 
 export interface AccessRequest {

@@ -3,15 +3,26 @@ import { UserProfile, MedicalRecord, AccessRequest, AuditLog } from './types.js'
 import { generateHash } from './utils/cryptoSim.js';
 
 // Components
-import LandingPage from './components/LandingPage.jsx';
-import AuthPage from './components/AuthPage.jsx';
-import PatientDashboard from './components/PatientDashboard.jsx';
-import DoctorDashboard from './components/DoctorDashboard.jsx';
+const LandingPage = React.lazy(() => import('./components/LandingPage.jsx'));
+const AuthPage = React.lazy(() => import('./components/AuthPage.jsx'));
+const PatientDashboard = React.lazy(() => import('./components/PatientDashboard.jsx'));
+const DoctorDashboard = React.lazy(() => import('./components/DoctorDashboard.jsx'));
 import { Loader2, RefreshCw } from 'lucide-react';
 
 export default function App() {
   // Screens state: 'LANDING' | 'AUTH' | 'PATIENT_DASH' | 'DOCTOR_DASH'
-  const [screen, setScreen] = useState<'LANDING' | 'AUTH' | 'PATIENT_DASH' | 'DOCTOR_DASH'>('LANDING');
+  const [screen, setScreen] = useState<'LANDING' | 'AUTH' | 'PATIENT_DASH' | 'DOCTOR_DASH'>(() => {
+    try {
+      const savedUser = localStorage.getItem('medsafe_user');
+      if (savedUser) {
+        const user = JSON.parse(savedUser) as UserProfile;
+        return user.role === 'PATIENT' ? 'PATIENT_DASH' : 'DOCTOR_DASH';
+      }
+    } catch (e) {
+      console.error('Failed to parse user role for initial screen', e);
+    }
+    return 'LANDING';
+  });
   const [authMode, setAuthMode] = useState<'LOGIN' | 'REGISTER'>('LOGIN');
 
   // Shared state databases (hydrated via Real-Time API syncing)
@@ -19,7 +30,15 @@ export default function App() {
   const [records, setRecords] = useState<MedicalRecord[]>([]);
   const [requests, setRequests] = useState<AccessRequest[]>([]);
   const [logs, setLogs] = useState<AuditLog[]>([]);
-  const [currentUser, setCurrentUser] = useState<UserProfile | null>(null);
+  const [currentUser, setCurrentUser] = useState<UserProfile | null>(() => {
+    try {
+      const savedUser = localStorage.getItem('medsafe_user');
+      return savedUser ? JSON.parse(savedUser) : null;
+    } catch (e) {
+      console.error('Failed to parse user from localStorage', e);
+      return null;
+    }
+  });
 
   const [isLoadingState, setIsLoadingState] = useState(true);
   const [isSyncing, setIsSyncing] = useState(false);
@@ -68,6 +87,15 @@ export default function App() {
     }, 2000);
     return () => clearInterval(interval);
   }, [currentUser?.id]);
+
+  // Synchronize currentUser with localStorage for session persistence
+  useEffect(() => {
+    if (currentUser) {
+      localStorage.setItem('medsafe_user', JSON.stringify(currentUser));
+    } else {
+      localStorage.removeItem('medsafe_user');
+    }
+  }, [currentUser]);
 
   // Appends a new audit log with an immutable SHA-256 simulation block
   const handleAddLog = async (action: string, status: 'SUCCESS' | 'WARNING' | 'ALERT', details: string) => {
@@ -253,50 +281,57 @@ export default function App() {
         )}
       </div>
 
-      {screen === 'LANDING' && (
-        <LandingPage
-          onGetStarted={() => { setAuthMode('REGISTER'); setScreen('AUTH'); }}
-          onLogin={() => { setAuthMode('LOGIN'); setScreen('AUTH'); }}
-        />
-      )}
+      <React.Suspense fallback={
+        <div className="min-h-screen bg-zinc-50 flex flex-col items-center justify-center space-y-4">
+          <Loader2 className="h-8 w-8 text-teal-600 animate-spin" />
+          <p className="text-sm font-mono text-zinc-500">Decrypting interface nodes...</p>
+        </div>
+      }>
+        {screen === 'LANDING' && (
+          <LandingPage
+            onGetStarted={() => { setAuthMode('REGISTER'); setScreen('AUTH'); }}
+            onLogin={() => { setAuthMode('LOGIN'); setScreen('AUTH'); }}
+          />
+        )}
 
-      {screen === 'AUTH' && (
-        <AuthPage
-          onBack={() => setScreen('LANDING')}
-          onAuthSuccess={handleAuthSuccess}
-          existingUsers={users}
-          onRegisterUser={handleRegisterUser}
-          initialMode={authMode}
-        />
-      )}
+        {screen === 'AUTH' && (
+          <AuthPage
+            onBack={() => setScreen('LANDING')}
+            onAuthSuccess={handleAuthSuccess}
+            existingUsers={users}
+            onRegisterUser={handleRegisterUser}
+            initialMode={authMode}
+          />
+        )}
 
-      {screen === 'PATIENT_DASH' && currentUser && (
-        <PatientDashboard
-          user={currentUser}
-          records={records}
-          requests={requests}
-          logs={logs}
-          onLogout={handleLogout}
-          onAddRecord={handleAddRecord}
-          onUpdateRequestHandler={handleUpdateRequestStatus}
-          onAddLog={handleAddLog}
-        />
-      )}
+        {screen === 'PATIENT_DASH' && currentUser && (
+          <PatientDashboard
+            user={currentUser}
+            records={records}
+            requests={requests}
+            logs={logs}
+            onLogout={handleLogout}
+            onAddRecord={handleAddRecord}
+            onUpdateRequestHandler={handleUpdateRequestStatus}
+            onAddLog={handleAddLog}
+          />
+        )}
 
-      {screen === 'DOCTOR_DASH' && currentUser && (
-        <DoctorDashboard
-          user={currentUser}
-          records={records}
-          requests={requests}
-          logs={logs}
-          allUsers={users}
-          onLogout={handleLogout}
-          onSubmitRequest={handleDoctorSubmitRequest}
-          onAddRecord={handleAddRecord}
-          onAddLog={handleAddLog}
-          onRevokeAccessDirectly={(reqId) => handleUpdateRequestStatus(reqId, 'REVOKED')}
-        />
-      )}
+        {screen === 'DOCTOR_DASH' && currentUser && (
+          <DoctorDashboard
+            user={currentUser}
+            records={records}
+            requests={requests}
+            logs={logs}
+            allUsers={users}
+            onLogout={handleLogout}
+            onSubmitRequest={handleDoctorSubmitRequest}
+            onAddRecord={handleAddRecord}
+            onAddLog={handleAddLog}
+            onRevokeAccessDirectly={(reqId) => handleUpdateRequestStatus(reqId, 'REVOKED')}
+          />
+        )}
+      </React.Suspense>
     </div>
   );
 }
