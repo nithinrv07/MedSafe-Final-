@@ -127,9 +127,27 @@ export default function DoctorDashboard({
       return;
     }
 
+    const finalKey = passedKey ? passedKey.trim() : '';
+    if (!finalKey) {
+      setDecryptionError({
+        ...decryptionError,
+        [rec.id]: 'Private key block is required.'
+      });
+      return;
+    }
+
+    const patientUser = allUsers.find(u => u.id === req.patientId);
+    const targetPrivateKey = patientUser?.privateKey || 'MOCK_PEM_PRIVATE_KEY';
+
+    if (finalKey !== targetPrivateKey) {
+      setDecryptionError({
+        ...decryptionError,
+        [rec.id]: 'Validation Failure: Decryption key mismatch.'
+      });
+      return;
+    }
+
     try {
-      const finalKey = passedKey || user.privateKey || 'MOCK_PEM_PRIVATE_KEY';
-      // Decode ciphertext back to plaintext local cryptogram
       const decodedPlain = decryptRecord(rec.encryptedContent, finalKey);
       
       setDecryptedRecordIds({
@@ -142,11 +160,10 @@ export default function DoctorDashboard({
       delete errs[rec.id];
       setDecryptionError(errs);
 
-      const isCustom = !!passedKey;
       onAddLog(
-        isCustom ? 'Vault Record Decrypted with Custom Key' : 'Vault Record Decrypted',
+        'Vault Record Decrypted',
         'SUCCESS',
-        `Doctor Decryption validated. Opened record "${rec.title}" with valid ${isCustom ? 'manually input custom digital key' : 'digital transaction token'}.`
+        `Doctor Decryption validated. Opened record "${rec.title}" with valid digital transaction token.`
       );
     } catch (err: any) {
       setDecryptionError({

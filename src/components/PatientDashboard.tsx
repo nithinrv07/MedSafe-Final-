@@ -272,7 +272,23 @@ export default function PatientDashboard({
   };
 
   const handleDecryptSelfRecord = (rec: MedicalRecord, passedKey?: string) => {
-    const finalKey = passedKey || user.privateKey || 'MOCK_PEM_PRIVATE_KEY';
+    const finalKey = passedKey ? passedKey.trim() : '';
+    if (!finalKey) {
+      setDecryptionError({
+        ...decryptionError,
+        [rec.id]: 'Private key block is required.'
+      });
+      return;
+    }
+
+    if (finalKey !== user.privateKey) {
+      setDecryptionError({
+        ...decryptionError,
+        [rec.id]: 'Validation Failure: Decryption key mismatch.'
+      });
+      return;
+    }
+
     try {
       const decodedPlain = decryptRecord(rec.encryptedContent, finalKey);
       setDecryptedRecordIds({
@@ -285,11 +301,10 @@ export default function PatientDashboard({
       delete errs[rec.id];
       setDecryptionError(errs);
 
-      const isCustom = !!passedKey;
       onAddLog(
-        isCustom ? 'Self Record Decrypted with Custom Key' : 'Self Record Decrypted',
+        'Self Record Decrypted',
         'SUCCESS',
-        `Patient Eleanor Vance decrypted own record "${rec.title}" with valid ${isCustom ? 'manually input custom cryptographic key' : 'personal primacy credential key'}.`
+        `Patient Eleanor Vance decrypted own record "${rec.title}" with valid personal primacy credential key.`
       );
     } catch (err: any) {
       setDecryptionError({
