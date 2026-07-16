@@ -426,6 +426,26 @@ app.post("/api/records", (req, res) => {
   res.json({ success: true, record: newRec });
 });
 
+// Update Medical Record
+app.post("/api/records/update", (req, res) => {
+  const updatedRec: MedicalRecord = req.body;
+  if (!updatedRec || !updatedRec.id || !updatedRec.patientId) {
+    return res.status(400).json({ error: "Invalid medical record data" });
+  }
+  let updated = false;
+  records = records.map(rec => {
+    if (rec.id === updatedRec.id) {
+      updated = true;
+      return updatedRec;
+    }
+    return rec;
+  });
+  if (!updated) {
+    return res.status(404).json({ error: "Record not found" });
+  }
+  res.json({ success: true, record: updatedRec });
+});
+
 // Submit Access Request (by doctor)
 app.post("/api/requests/submit", (req, res) => {
   const newRequest: AccessRequest = req.body;

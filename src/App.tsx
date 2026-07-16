@@ -183,6 +183,19 @@ export default function App() {
     }
   };
 
+  const handleUpdateRecord = async (updatedRec: MedicalRecord) => {
+    setRecords(prev => prev.map(r => r.id === updatedRec.id ? updatedRec : r));
+    try {
+      await fetch('/api/records/update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updatedRec),
+      });
+    } catch (err) {
+      console.error('Failed to update record on ledger:', err);
+    }
+  };
+
   // Requests pipeline triggers
   const handleUpdateRequestStatus = async (
     requestId: string,
@@ -328,6 +341,7 @@ export default function App() {
             logs={logs}
             onLogout={handleLogout}
             onAddRecord={handleAddRecord}
+            onUpdateRecord={handleUpdateRecord}
             onUpdateRequestHandler={handleUpdateRequestStatus}
             onAddLog={handleAddLog}
           />

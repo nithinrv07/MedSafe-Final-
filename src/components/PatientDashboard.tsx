@@ -12,6 +12,7 @@ interface PatientDashboardProps {
   logs: AuditLog[];
   onLogout: () => void;
   onAddRecord: (record: MedicalRecord) => void;
+  onUpdateRecord: (record: MedicalRecord) => void;
   onUpdateRequestHandler: (requestId: string, status: 'APPROVED' | 'REJECTED' | 'REVOKED', digitalSignature?: string) => void;
   onAddLog: (action: string, status: 'SUCCESS' | 'WARNING' | 'ALERT', details: string) => void;
 }
@@ -23,6 +24,7 @@ export default function PatientDashboard({
   logs,
   onLogout,
   onAddRecord,
+  onUpdateRecord,
   onUpdateRequestHandler,
   onAddLog,
 }: PatientDashboardProps) {
@@ -45,6 +47,14 @@ export default function PatientDashboard({
   const [recordKeyInputs, setRecordKeyInputs] = useState<Record<string, string>>({});
   const [showingKeyInputIds, setShowingKeyInputIds] = useState<Record<string, boolean>>({});
   const [selectedZoomPhoto, setSelectedZoomPhoto] = useState<string | null>(null);
+
+  // Editing state controls for decrypted records
+  const [editingRecordId, setEditingRecordId] = useState<string | null>(null);
+  const [editingTitle, setEditingTitle] = useState('');
+  const [editingCategory, setEditingCategory] = useState<'Prescription' | 'Lab Report' | 'Diagnosis' | 'Immunization'>('Prescription');
+  const [editingDoctorName, setEditingDoctorName] = useState('');
+  const [editingDetails, setEditingDetails] = useState('');
+  const [editingDrugs, setEditingDrugs] = useState('');
 
   // Encryption Visualizer Intermediary State
   const [visualData, setVisualData] = useState<{
@@ -287,6 +297,51 @@ export default function PatientDashboard({
         [rec.id]: err.message || 'Validation Failure: Cryptographic mismatch.'
       });
     }
+  };
+
+  const handleCloseDecryptedRecord = (recId: string) => {
+    const updated = { ...decryptedRecordIds };
+    delete updated[recId];
+    setDecryptedRecordIds(updated);
+    if (editingRecordId === recId) {
+      setEditingRecordId(null);
+    }
+  };
+
+  const handleUpdateRecordSubmit = (rec: MedicalRecord) => {
+    if (!editingTitle || !editingDetails) return;
+
+    const updatedEncrypted = encryptRecord(editingDetails, user.publicKey);
+    const updatedHash = generateHash(editingDetails);
+    const updatedMedicines = editingDrugs
+      ? editingDrugs.split(',').map(m => m.trim()).filter(Boolean)
+      : [];
+
+    const updatedRecord: MedicalRecord = {
+      ...rec,
+      title: editingTitle,
+      category: editingCategory,
+      doctorName: editingDoctorName || 'Self Uploaded',
+      details: editingDetails,
+      encryptedContent: updatedEncrypted,
+      hash: updatedHash,
+      medicines: updatedMedicines,
+    };
+
+    setDecryptedRecordIds({
+      ...decryptedRecordIds,
+      [rec.id]: editingDetails,
+    });
+
+    onUpdateRecord(updatedRecord);
+
+    onAddLog(
+      'Record Vault Updated',
+      'SUCCESS',
+      `Patient Eleanor Vance updated and re-encrypted record "${editingTitle}" on the zero-knowledge ledger.`
+    );
+
+    setEditingRecordId(null);
   };
 
   const copyText = (txt: string, type: 'PUBLIC' | 'PRIVATE') => {
@@ -627,14 +682,74 @@ export default function PatientDashboard({
                             {rec.encryptedContent}
                           </p>
                         </div>
-
                         {/* Decrypted payload or locker */}
                         {decryptedRecordIds[rec.id] ? (
                           <div className="space-y-4 pt-1 animate-fade-in text-xs">
-                            <div className="p-4 bg-teal-50/20 border border-teal-150 rounded-xl text-zinc-850 space-y-1">
-                              <span className="text-[9px] font-mono text-teal-800 uppercase font-bold tracking-wider block">Plaintext Medical Diagnosis / Narrative</span>
-                              <p className="leading-relaxed font-sans font-medium">{decryptedRecordIds[rec.id]}</p>
-                            </div>
+                            {editingRecordId === rec.id ? (
+                              <div className="space-y-3 p-4 bg-zinc-50 border border-zinc-200 rounded-xl">
+                                <span className="text-[9px] font-mono text-zinc-500 uppercase font-bold tracking-wider block mb-1">Edit Record Parameters</span>
+                                
+                                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                                  <div>
+                                    <label className="block text-[8px] font-mono text-zinc-400 uppercase font-bold mb-1">Record Title</label>
+                                    <input
+                                      type="text"
+                                      value={editingTitle}
+                                      onChange={(e) => setEditingTitle(e.target.value)}
+                                      className="w-full bg-white border border-zinc-250 rounded-lg p-1.5 text-[11px] focus:outline-none"
+                                    />
+                                  </div>
+                                  <div>
+                                    <label className="block text-[8px] font-mono text-zinc-400 uppercase font-bold mb-1">Category Type</label>
+                                    <select
+                                      value={editingCategory}
+                                      onChange={(e) => setEditingCategory(e.target.value as any)}
+                                      className="w-full bg-white border border-zinc-250 rounded-lg p-1.5 text-[11px] focus:outline-none h-[29px]"
+                                    >
+                                      <option value="Prescription">Prescription</option>
+                                      <option value="Lab Report">Lab Report</option>
+                                      <option value="Diagnosis">Diagnosis</option>
+                                      <option value="Immunization">Immunization</option>
+                                    </select>
+                                  </div>
+                                  <div>
+                                    <label className="block text-[8px] font-mono text-zinc-400 uppercase font-bold mb-1">Issuing Physician</label>
+                                    <input
+                                      type="text"
+                                      value={editingDoctorName}
+                                      onChange={(e) => setEditingDoctorName(e.target.value)}
+                                      className="w-full bg-white border border-zinc-250 rounded-lg p-1.5 text-[11px] focus:outline-none"
+                                    />
+                                  </div>
+                                </div>
+
+                                <div>
+                                  <label className="block text-[8px] font-mono text-zinc-400 uppercase font-bold mb-1">Plaintext Medical Narrative</label>
+                                  <textarea
+                                    value={editingDetails}
+                                    onChange={(e) => setEditingDetails(e.target.value)}
+                                    rows={3}
+                                    className="w-full bg-white border border-zinc-250 rounded-lg p-1.5 text-[11px] focus:outline-none leading-relaxed"
+                                  />
+                                </div>
+
+                                <div>
+                                  <label className="block text-[8px] font-mono text-zinc-400 uppercase font-bold mb-1">Medicines (Comma-separated)</label>
+                                  <input
+                                    type="text"
+                                    value={editingDrugs}
+                                    onChange={(e) => setEditingDrugs(e.target.value)}
+                                    className="w-full bg-white border border-zinc-250 rounded-lg p-1.5 text-[11px] focus:outline-none"
+                                    placeholder="e.g. Nitroglycerin, Lisinopril"
+                                  />
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="p-4 bg-teal-50/20 border border-teal-150 rounded-xl text-zinc-850 space-y-1">
+                                <span className="text-[9px] font-mono text-teal-800 uppercase font-bold tracking-wider block">Plaintext Medical Diagnosis / Narrative</span>
+                                <p className="leading-relaxed font-sans font-medium">{decryptedRecordIds[rec.id]}</p>
+                              </div>
+                            )}
 
                             {((rec.photoUrls && rec.photoUrls.length > 0) || rec.photoUrl) && (
                               <div className="space-y-2 pt-2">
@@ -681,7 +796,7 @@ export default function PatientDashboard({
                           </div>
                         )}
 
-                        {rec.medicines.length > 0 && (
+                        {rec.medicines.length > 0 && editingRecordId !== rec.id && (
                           <div className="flex flex-wrap items-center gap-1.5 pt-1.5">
                             <span className="text-[10px] font-mono text-zinc-400 uppercase mr-1 font-semibold">
                               Covered Active Drug Lines:
@@ -704,8 +819,48 @@ export default function PatientDashboard({
                         
                         <div className="w-full md:w-auto text-right space-y-2">
                           {decryptedRecordIds[rec.id] ? (
-                            <div className="inline-flex py-1 px-2.5 rounded-lg bg-emerald-50 border border-emerald-250 text-emerald-700 text-[10px] font-mono font-bold items-center gap-1.5 animate-fade-in">
-                              <Check className="h-3.5 w-3.5" /> Decrypted Locally
+                            <div className="flex flex-wrap items-center justify-end gap-2 animate-fade-in">
+                              {editingRecordId === rec.id ? (
+                                <>
+                                  <button
+                                    onClick={() => handleUpdateRecordSubmit(rec)}
+                                    className="px-2.5 py-1 rounded bg-teal-650 hover:bg-teal-700 text-white font-mono text-[10px] font-bold border border-teal-650 hover:border-teal-700 cursor-pointer transition-colors"
+                                  >
+                                    Update
+                                  </button>
+                                  <button
+                                    onClick={() => setEditingRecordId(null)}
+                                    className="px-2.5 py-1 rounded bg-white hover:bg-zinc-100 text-zinc-600 font-mono text-[10px] font-bold border border-zinc-350 cursor-pointer transition-colors"
+                                  >
+                                    Cancel
+                                  </button>
+                                </>
+                              ) : (
+                                <>
+                                  <div className="inline-flex py-1 px-2 rounded-lg bg-emerald-50 border border-emerald-250 text-emerald-700 text-[9px] font-mono font-bold items-center gap-1">
+                                    <Check className="h-3 w-3" /> Decrypted
+                                  </div>
+                                  <button
+                                    onClick={() => {
+                                      setEditingRecordId(rec.id);
+                                      setEditingTitle(rec.title);
+                                      setEditingCategory(rec.category);
+                                      setEditingDoctorName(rec.doctorName);
+                                      setEditingDetails(decryptedRecordIds[rec.id]);
+                                      setEditingDrugs(rec.medicines.join(', '));
+                                    }}
+                                    className="px-2.5 py-1 rounded bg-white hover:bg-zinc-100 text-zinc-700 font-mono text-[10px] font-bold border border-zinc-350 cursor-pointer transition-colors"
+                                  >
+                                    Edit
+                                  </button>
+                                  <button
+                                    onClick={() => handleCloseDecryptedRecord(rec.id)}
+                                    className="px-2.5 py-1 rounded bg-white hover:bg-red-50 text-red-600 font-mono text-[10px] font-bold border border-zinc-350 hover:border-red-300 cursor-pointer transition-colors"
+                                  >
+                                    Close
+                                  </button>
+                                </>
+                              )}
                             </div>
                           ) : (
                             <div className="space-y-2 min-w-[240px]">
