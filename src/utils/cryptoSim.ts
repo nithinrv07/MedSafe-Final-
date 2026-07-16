@@ -80,6 +80,12 @@ export function checkDrugInteractions(medicines: string[]): {
   // High clinical accuracy interaction catalog
   const interactions = [
     {
+      drugs: ['alcohol', 'benzodiazepine'],
+      severity: 'CRITICAL' as const,
+      description: 'Co-ingestion of alcohol and benzodiazepines causes profound, synergistic central nervous system (CNS) depression, severe respiratory depression, coma, and life-threatening overdose risk.',
+      resolution: 'Strict containment: Do not consume alcohol under any circumstances while undergoing benzodiazepine therapy. Monitor for extreme drowsiness, slowed breathing, or loss of consciousness.',
+    },
+    {
       drugs: ['nitroglycerin', 'sildenafil'],
       severity: 'CRITICAL' as const,
       description: 'Co-administration can cause life-threatening severe arterial hypotension (extreme blood pressure drop). Both pathways synergize nitric oxide effects.',
