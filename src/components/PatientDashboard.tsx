@@ -567,6 +567,23 @@ export default function PatientDashboard({
                       placeholder="e.g. Nitroglycerin, Sildenafil, Lisinopril, Spironolactone"
                       className="w-full bg-zinc-50 border border-zinc-200 rounded-xl py-2 px-3 text-zinc-900 placeholder-zinc-400 focus:outline-none focus:border-zinc-400 transition-all hover:bg-white"
                     />
+                    {(() => {
+                      const list = newDrugs ? newDrugs.split(',').map(m => m.trim()).filter(Boolean) : [];
+                      const evalResult = checkDrugInteractions(list);
+                      if (evalResult.severity === 'NONE') return null;
+                      return (
+                        <div className={`mt-2.5 p-3 rounded-xl border text-[10px] space-y-1.5 animate-scale-up ${evalResult.severity === 'CRITICAL' ? 'bg-red-50 border-red-200 text-red-800' : 'bg-amber-50 border-amber-250 text-amber-800'}`}>
+                          <div className="flex items-center gap-1.5 font-bold font-mono text-[10px] uppercase">
+                            <AlertTriangle className="h-3.5 w-3.5 text-red-650" />
+                            AI INTERCEPTOR: {evalResult.severity} CONTRAINDICATION
+                          </div>
+                          <p className="font-sans leading-relaxed">{evalResult.description}</p>
+                          <div className="pt-1.5 border-t border-current/10 font-sans leading-relaxed">
+                            <span className="font-bold">Suggested Clinical Mitigation:</span> {evalResult.resolution}
+                          </div>
+                        </div>
+                      );
+                    })()}
                     <span className="text-[10px] text-zinc-500 font-sans mt-1.5 block leading-relaxed">
                       * AI checks cross-drug conflicts automatically if medications interact (e.g. Lisinopril + Spironolactone).
                     </span>
@@ -742,6 +759,23 @@ export default function PatientDashboard({
                                     className="w-full bg-white border border-zinc-250 rounded-lg p-1.5 text-[11px] focus:outline-none"
                                     placeholder="e.g. Nitroglycerin, Lisinopril"
                                   />
+                                  {(() => {
+                                    const list = editingDrugs ? editingDrugs.split(',').map(m => m.trim()).filter(Boolean) : [];
+                                    const evalResult = checkDrugInteractions(list);
+                                    if (evalResult.severity === 'NONE') return null;
+                                    return (
+                                      <div className={`mt-2 p-2.5 rounded-lg border text-[9px] space-y-1.5 ${evalResult.severity === 'CRITICAL' ? 'bg-red-50 border-red-200 text-red-800' : 'bg-amber-50 border-amber-250 text-amber-800'}`}>
+                                        <div className="flex items-center gap-1 font-bold font-mono text-[9px] uppercase">
+                                          <AlertTriangle className="h-3 w-3 text-red-650" />
+                                          AI WARNING: {evalResult.severity}
+                                        </div>
+                                        <p className="font-sans leading-relaxed">{evalResult.description}</p>
+                                        <div className="pt-1 border-t border-current/10 font-sans leading-relaxed">
+                                          <span className="font-bold">Mitigation:</span> {evalResult.resolution}
+                                        </div>
+                                      </div>
+                                    );
+                                  })()}
                                 </div>
                               </div>
                             ) : (
@@ -808,6 +842,22 @@ export default function PatientDashboard({
                             ))}
                           </div>
                         )}
+                        {rec.medicines.length > 0 && editingRecordId !== rec.id && (() => {
+                          const evalResult = checkDrugInteractions(rec.medicines);
+                          if (evalResult.severity === 'NONE') return null;
+                          return (
+                            <div className={`mt-2 p-3 rounded-xl border text-[9px] space-y-1.5 ${evalResult.severity === 'CRITICAL' ? 'bg-red-50 border-red-200 text-red-850' : 'bg-amber-50 border-amber-250 text-amber-850'}`}>
+                              <div className="flex items-center gap-1 font-bold font-mono text-[9px] uppercase">
+                                <AlertTriangle className="h-3 w-3 text-red-650" />
+                                CLINICAL INTERACTION ALERT: {evalResult.severity}
+                              </div>
+                              <p className="font-sans leading-relaxed">{evalResult.description}</p>
+                              <div className="pt-1 border-t border-current/10 font-sans leading-relaxed">
+                                <span className="font-bold">Resolution:</span> {evalResult.resolution}
+                              </div>
+                            </div>
+                          );
+                        })()}
                       </div>
 
                       {/* Right-side status and unlock button */}
