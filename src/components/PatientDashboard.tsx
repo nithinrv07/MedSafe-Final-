@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Shield, Key, FileText, Lock, Plus, Check, X, LogOut, Radio, HelpCircle, Eye, EyeOff, AlertTriangle, AlertCircle, Copy, Database, Sparkles, RefreshCcw, UploadCloud, Image, Camera, Paperclip, Search, ZoomIn } from 'lucide-react';
+import { Shield, Key, FileText, Lock, Plus, Check, X, LogOut, Radio, HelpCircle, Eye, EyeOff, AlertTriangle, AlertCircle, Copy, Database, Sparkles, RefreshCcw, UploadCloud, Image, Camera, Paperclip, Search, ZoomIn, Loader2 } from 'lucide-react';
 import { UserProfile, MedicalRecord, AccessRequest, AuditLog } from '../types';
 import { encryptRecord, decryptRecord, generateHash, signRequest, checkDrugInteractions } from '../utils/cryptoSim';
 import EncryptionVisualizer from './EncryptionVisualizer';
@@ -32,6 +32,7 @@ export default function PatientDashboard({
   // Input States for New Record Creation
   const [showAddForm, setShowAddForm] = useState(false);
   const [newTitle, setNewTitle] = useState('');
+  const [isOcrAnalyzing, setIsOcrAnalyzing] = useState(false);
   const [newCategory, setNewCategory] = useState<'Prescription' | 'Lab Report' | 'Diagnosis' | 'Immunization'>('Prescription');
   const [newDoctorName, setNewDoctorName] = useState('');
   const [newDetails, setNewDetails] = useState('');
@@ -65,6 +66,7 @@ export default function PatientDashboard({
   const [isPasscodeModalOpen, setIsPasscodeModalOpen] = useState(false);
   const [passcodeAttempt, setPasscodeAttempt] = useState('');
   const [passcodeError, setPasscodeError] = useState('');
+  const [showPasscode, setShowPasscode] = useState(false);
 
   const handleShowKeyClick = () => {
     if (showPrivateKey) {
@@ -72,6 +74,7 @@ export default function PatientDashboard({
     } else {
       setPasscodeAttempt('');
       setPasscodeError('');
+      setShowPasscode(false);
       setIsPasscodeModalOpen(true);
     }
   };
@@ -82,6 +85,7 @@ export default function PatientDashboard({
     if (passcodeAttempt === correctPasscode) {
       setShowPrivateKey(true);
       setIsPasscodeModalOpen(false);
+      setShowPasscode(false);
       setPasscodeAttempt('');
       setPasscodeError('');
       onAddLog(
@@ -120,18 +124,46 @@ export default function PatientDashboard({
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (files && files.length > 0) {
-      Array.from(files).forEach((file: File) => {
-        const reader = new FileReader();
-        reader.onloadend = () => {
-          setNewPhotoUrls((prev) => [...prev, reader.result as string]);
-          onAddLog(
-            'Diagnostic Image Uploaded',
-            'SUCCESS',
-            `Selected local patient scan document: ${file.name} (${Math.round(file.size / 1024)} KB) and processed key buffers ready for browser pre-encryption.`
-          );
-        };
-        reader.readAsDataURL(file);
-      });
+      const file = files[0];
+      setIsOcrAnalyzing(true);
+
+      const reader = new FileReader();
+      reader.onloadend = async () => {
+        const base64Data = reader.result as string;
+        setNewPhotoUrls((prev) => [...prev, base64Data]);
+        onAddLog(
+          'Diagnostic Image Uploaded',
+          'SUCCESS',
+          `Selected local patient scan document: ${file.name} (${Math.round(file.size / 1024)} KB) and processed key buffers ready for browser pre-encryption.`
+        );
+
+        try {
+          const res = await fetch('/api/ocr/analyze', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ image: base64Data, fileName: file.name }),
+          });
+          const data = await res.json();
+          if (res.ok && data.success && data.data) {
+            setNewTitle(data.data.title || '');
+            setNewCategory(data.data.category || 'Prescription');
+            setNewDoctorName(data.data.doctorName || '');
+            setNewDetails(data.data.details || '');
+            setNewDrugs(data.data.medicines || '');
+
+            onAddLog(
+              'AI OCR Analysis Complete',
+              'SUCCESS',
+              `Automatically extracted document details via ${data.simulated ? 'clinical simulator template' : 'Gemini 2.0 AI'} and auto-populated vault form fields.`
+            );
+          }
+        } catch (err) {
+          console.error('Failed to run OCR details extraction:', err);
+        } finally {
+          setIsOcrAnalyzing(false);
+        }
+      };
+      reader.readAsDataURL(file);
     }
   };
 
@@ -389,9 +421,17 @@ export default function PatientDashboard({
             {showAddForm && (
               <div id="add-record-panel" className="bg-white border border-zinc-200 rounded-2xl p-6 space-y-4 shadow-md">
                 <div className="flex justify-between items-center pb-2 border-b border-zinc-150">
-                  <h4 className="font-display font-bold text-zinc-900 text-sm uppercase tracking-wide">
-                    Zero-Knowledge Record Generator
-                  </h4>
+                  <div className="flex items-center gap-2">
+                    <h4 className="font-display font-bold text-zinc-900 text-sm uppercase tracking-wide">
+                      Zero-Knowledge Record Generator
+                    </h4>
+                    {isOcrAnalyzing && (
+                      <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[9px] font-mono font-bold bg-teal-50 text-teal-700 border border-teal-200 animate-pulse">
+                        <Loader2 className="h-2.5 w-2.5 animate-spin" />
+                        AI Parsing...
+                      </span>
+                    )}
+                  </div>
                   <button
                     onClick={() => setShowAddForm(false)}
                     className="text-zinc-400 hover:text-zinc-700 p-1.5 rounded hover:bg-zinc-100 cursor-pointer"
@@ -483,11 +523,11 @@ export default function PatientDashboard({
                       Attach Clinical Photo Card or Scan Document (Multiple Supported)
                     </label>
                     
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="w-full">
                       {/* Drag & Drop File Selector area */}
-                      <div className="border border-dashed border-zinc-200 hover:border-zinc-350 rounded-xl p-4 bg-zinc-50 hover:bg-zinc-100 transition-all text-center relative flex flex-col justify-center items-center group min-h-[110px] bg-zinc-50/50">
-                        <UploadCloud className="h-6 w-6 text-zinc-400 mb-1.5 group-hover:text-zinc-650 transition-colors" />
-                        <p className="text-[10px] font-medium text-zinc-800">
+                      <div className="border border-dashed border-zinc-200 hover:border-zinc-350 rounded-xl p-6 bg-zinc-50 hover:bg-zinc-100 transition-all text-center relative flex flex-col justify-center items-center group min-h-[120px] bg-zinc-50/50">
+                        <UploadCloud className="h-7 w-7 text-zinc-400 mb-1.5 group-hover:text-zinc-650 transition-colors" />
+                        <p className="text-[11px] font-medium text-zinc-800">
                           Drag & drop or <span className="text-teal-600 font-bold hover:underline cursor-pointer">browse files</span>
                         </p>
                         <p className="text-[9px] text-zinc-400 mt-0.5">JPEG, PNG scans up to 10MB</p>
@@ -498,53 +538,6 @@ export default function PatientDashboard({
                           onChange={handleFileChange}
                           className="absolute inset-0 opacity-0 cursor-pointer w-full h-full"
                         />
-                      </div>
-
-                      {/* Demo Sandbox Presets library */}
-                      <div className="bg-zinc-50/50 border border-zinc-200 rounded-xl p-3 flex flex-col justify-between">
-                        <span className="text-[8px] font-mono text-zinc-400 uppercase font-bold block mb-1.5">Or choose high-res sandbox mock preset:</span>
-                        <div className="grid grid-cols-2 gap-1.5 text-[9px] font-medium font-sans">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setNewPhotoUrls(prev => [...prev, 'https://picsum.photos/seed/patient_xray/600/450']);
-                              onAddLog('Diagnostic Preset Loaded', 'SUCCESS', 'Patient loaded high-resolution chest X-Ray (Diagnostic Template Preset).');
-                            }}
-                            className={`p-1.5 rounded-lg border text-left flex items-center gap-1 transition-all bg-white hover:bg-zinc-55 cursor-pointer ${newPhotoUrls.some(url => url.includes('patient_xray')) ? 'border-teal-500 ring-1 ring-teal-500 text-teal-850 font-bold' : 'border-zinc-250 text-zinc-650'}`}
-                          >
-                            🩻 Chest X-Ray scan
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setNewPhotoUrls(prev => [...prev, 'https://picsum.photos/seed/patient_mri/600/450']);
-                              onAddLog('Diagnostic Preset Loaded', 'SUCCESS', 'Patient loaded high-resolution Cerebrum MRI Scan.');
-                            }}
-                            className={`p-1.5 rounded-lg border text-left flex items-center gap-1 transition-all bg-white hover:bg-zinc-55 cursor-pointer ${newPhotoUrls.some(url => url.includes('patient_mri')) ? 'border-teal-500 ring-1 ring-teal-500 text-teal-850 font-bold' : 'border-zinc-250 text-zinc-650'}`}
-                          >
-                            🧠 Brain MRI scan
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setNewPhotoUrls(prev => [...prev, 'https://picsum.photos/seed/patient_ecg/600/450']);
-                              onAddLog('Diagnostic Preset Loaded', 'SUCCESS', 'Patient loaded clinical Einthoven Lead-II ECG paper sweep chart.');
-                            }}
-                            className={`p-1.5 rounded-lg border text-left flex items-center gap-1 transition-all bg-white hover:bg-zinc-55 cursor-pointer ${newPhotoUrls.some(url => url.includes('patient_ecg')) ? 'border-teal-500 ring-1 ring-teal-500 text-teal-850 font-bold' : 'border-zinc-250 text-zinc-650'}`}
-                          >
-                            📈 Einthoven ECG chart
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setNewPhotoUrls(prev => [...prev, 'https://picsum.photos/seed/patient_prescription/600/450']);
-                              onAddLog('Diagnostic Preset Loaded', 'SUCCESS', 'Patient loaded physical prescription paper slip receipt.');
-                            }}
-                            className={`p-1.5 rounded-lg border text-left flex items-center gap-1 transition-all bg-white hover:bg-zinc-55 cursor-pointer ${newPhotoUrls.some(url => url.includes('patient_prescription')) ? 'border-teal-500 ring-1 ring-teal-500 text-teal-850 font-bold' : 'border-zinc-250 text-zinc-650'}`}
-                          >
-                            📄 Prescription receipt
-                          </button>
-                        </div>
                       </div>
                     </div>
 
@@ -1277,15 +1270,29 @@ export default function PatientDashboard({
                 <label className="block text-[10px] font-mono text-zinc-550 uppercase tracking-wider">
                   Passcode
                 </label>
-                <input
-                  type="password"
-                  required
-                  autoFocus
-                  value={passcodeAttempt}
-                  onChange={(e) => setPasscodeAttempt(e.target.value)}
-                  placeholder="••••••••"
-                  className="w-full bg-zinc-50 border border-zinc-200 rounded-xl py-2.5 px-3.5 text-sm font-mono text-zinc-900 focus:outline-none focus:border-zinc-400 hover:bg-white transition-all shadow-inner"
-                />
+                <div className="relative">
+                  <input
+                    type={showPasscode ? "text" : "password"}
+                    required
+                    autoFocus
+                    value={passcodeAttempt}
+                    onChange={(e) => setPasscodeAttempt(e.target.value)}
+                    placeholder="••••••••"
+                    className="w-full bg-zinc-50 border border-zinc-200 rounded-xl py-2.5 pl-3.5 pr-10 text-sm font-mono text-zinc-900 focus:outline-none focus:border-zinc-400 hover:bg-white transition-all shadow-inner"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPasscode(!showPasscode)}
+                    className="absolute right-3.5 top-3 text-zinc-400 hover:text-zinc-655 focus:outline-none transition-colors cursor-pointer"
+                    title={showPasscode ? "Hide passcode" : "Show passcode"}
+                  >
+                    {showPasscode ? (
+                      <EyeOff className="h-4 w-4" />
+                    ) : (
+                      <Eye className="h-4 w-4" />
+                    )}
+                  </button>
+                </div>
               </div>
 
               {!user.passcode && (

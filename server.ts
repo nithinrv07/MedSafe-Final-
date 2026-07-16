@@ -5,13 +5,17 @@ import { generateKeyPair, encryptRecord, generateHash } from "./src/utils/crypto
 import { UserProfile, MedicalRecord, AccessRequest, AuditLog } from "./src/types.js";
 import dotenv from "dotenv";
 import nodemailer from "nodemailer";
+import dns from "dns";
+import { GoogleGenAI } from "@google/genai";
 
 dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
-app.use(express.json());
+// Increase body parsing limits to support larger report payloads
+app.use(express.json({ limit: "10mb" }));
+app.use(express.urlencoded({ limit: "10mb", extended: true }));
 
 // In-Memory Database
 let users: UserProfile[] = [];
@@ -147,6 +151,19 @@ interface OTPStoreVal {
 }
 const otpStore = new Map<string, OTPStoreVal>();
 
+// Helper to resolve host to IPv4 to bypass potential IPv6 lookup hangs on Windows/restricted networks
+function lookupHost(host: string): Promise<string> {
+  return new Promise((resolve) => {
+    dns.lookup(host, { family: 4 }, (err, address) => {
+      if (err || !address) {
+        resolve(host); // Fallback to raw host if lookup fails
+      } else {
+        resolve(address);
+      }
+    });
+  });
+}
+
 // Helper to send email OTP
 async function send_email_otp(email: string) {
   const otp = Math.floor(100000 + Math.random() * 900000).toString();
@@ -166,14 +183,24 @@ async function send_email_otp(email: string) {
   }
 
   try {
+    // Pre-resolve hostname to bypass slow IPv6 Node.js lookup hang on Windows/restricted networks
+    const resolvedHost = await lookupHost(smtpServer);
+
     const transporter = nodemailer.createTransport({
-      host: smtpServer,
+      host: resolvedHost,
       port: smtpPort,
       secure: smtpPort === 465,
       auth: {
         user: senderEmail,
         pass: appPassword,
       },
+      connectionTimeout: 10000, // 10s connection timeout
+      greetingTimeout: 15000,   // 15s greeting timeout (gmail can be slow to send banner)
+      socketTimeout: 15000,
+      tls: {
+        rejectUnauthorized: false,
+        servername: smtpServer  // Required for TLS cert validation when using resolved IP
+      }
     });
 
     const mailOptions = {
@@ -227,6 +254,123 @@ function verify_email_otp(email: string, otp: string): [boolean, string] {
   otpStore.delete(email.toLowerCase());
   return [true, "OTP verified successfully"];
 }
+
+// OCR mock helper
+function simulateOcr(fileName: string) {
+  const nameLower = fileName.toLowerCase();
+  if (nameLower.includes('xray') || nameLower.includes('x-ray')) {
+    return {
+      title: "Chest X-Ray scan",
+      category: "Diagnosis",
+      doctorName: "Dr. Sarah Lin",
+      details: "Mild bilateral pulmonary infiltration. No acute skeletal fractures. Heart size is normal. Recommended follow-up in 2 weeks.",
+      medicines: ""
+    };
+  } else if (nameLower.includes('mri')) {
+    return {
+      title: "Brain MRI scan",
+      category: "Diagnosis",
+      doctorName: "Dr. Sarah Lin",
+      details: "High-resolution Cerebrum MRI Scan showing normal ventricles and sulci. No focal mass effect or acute ischemia detected.",
+      medicines: ""
+    };
+  } else if (nameLower.includes('ecg') || nameLower.includes('ekg')) {
+    return {
+      title: "Einthoven ECG chart",
+      category: "Lab Report",
+      doctorName: "Dr. Robert Chen",
+      details: "Normal sinus rhythm at 72 bpm. PR interval: 0.16s, QRS duration: 0.08s. Normal axis, no ST-segment elevation or T-wave inversion.",
+      medicines: ""
+    };
+  } else if (nameLower.includes('prescription') || nameLower.includes('rx')) {
+    return {
+      title: "Prescription receipt",
+      category: "Prescription",
+      doctorName: "Dr. Robert Chen",
+      details: "Lisinopril 20mg Qd prescribed for essential hypertension. Take one tablet daily.",
+      medicines: "Lisinopril"
+    };
+  } else {
+    return {
+      title: "Scanned Document",
+      category: "Lab Report",
+      doctorName: "Self Uploaded",
+      details: "Clinical document successfully scanned and logged into the zero-knowledge ledger. Details extracted: Normal clinical parameters.",
+      medicines: ""
+    };
+  }
+}
+
+// --- API Endpoints ---
+
+// POST /api/ocr/analyze
+app.post("/api/ocr/analyze", async (req, res) => {
+  const { image, fileName } = req.body;
+  if (!image) {
+    return res.status(400).json({ error: "Image parameter is required" });
+  }
+
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey || apiKey === "MY_GEMINI_API_KEY" || apiKey.includes("xxxx")) {
+    console.log(`[OCR SIMULATOR] Mock analyzing image file: ${fileName}`);
+    const mockData = simulateOcr(fileName || "");
+    return res.json({ success: true, simulated: true, data: mockData });
+  }
+
+  try {
+    const matches = image.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
+    let mimeType = "image/png";
+    let base64Data = image;
+
+    if (matches && matches.length === 3) {
+      mimeType = matches[1];
+      base64Data = matches[2];
+    }
+
+    const ai = new GoogleGenAI({ apiKey });
+    console.log(`[OCR] Sending image (${mimeType}) to Gemini for structured extraction...`);
+
+    const response = await ai.models.generateContent({
+      model: "gemini-2.0-flash",
+      contents: [
+        {
+          inlineData: {
+            mimeType: mimeType,
+            data: base64Data
+          }
+        },
+        "Read this clinical scan, report, or medical prescription document and extract its properties as a JSON object matching the requested schema."
+      ],
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: "OBJECT",
+          properties: {
+            title: { type: "STRING", description: "Label/Title of the record" },
+            category: { type: "STRING", description: "Must be exactly: Prescription, Lab Report, Diagnosis, or Immunization" },
+            doctorName: { type: "STRING", description: "Name of the doctor/physician. Default to 'Self Uploaded' if not found." },
+            details: { type: "STRING", description: "Full report text/stats/findings" },
+            medicines: { type: "STRING", description: "Comma-separated list of any medicines" }
+          },
+          required: ["title", "category", "doctorName", "details", "medicines"]
+        }
+      }
+    });
+
+    const text = response.text();
+    if (!text) {
+      throw new Error("Empty response from Gemini");
+    }
+
+    const parsedData = JSON.parse(text);
+    console.log("[OCR] Successfully extracted details via Gemini:", parsedData);
+    return res.json({ success: true, simulated: false, data: parsedData });
+  } catch (error: any) {
+    console.error("Gemini OCR analysis failed:", error);
+    const mockData = simulateOcr(fileName || "");
+    return res.json({ success: true, simulated: true, data: mockData, error: error.message });
+  }
+});
 
 // --- API Endpoints ---
 

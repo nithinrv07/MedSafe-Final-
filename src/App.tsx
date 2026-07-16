@@ -13,6 +13,9 @@ export default function App() {
   // Screens state: 'LANDING' | 'AUTH' | 'PATIENT_DASH' | 'DOCTOR_DASH'
   const [screen, setScreen] = useState<'LANDING' | 'AUTH' | 'PATIENT_DASH' | 'DOCTOR_DASH'>(() => {
     try {
+      const savedScreen = localStorage.getItem('medsafe_screen');
+      if (savedScreen) return savedScreen as any;
+
       const savedUser = localStorage.getItem('medsafe_user');
       if (savedUser) {
         const user = JSON.parse(savedUser) as UserProfile;
@@ -23,7 +26,18 @@ export default function App() {
     }
     return 'LANDING';
   });
-  const [authMode, setAuthMode] = useState<'LOGIN' | 'REGISTER'>('LOGIN');
+  const [authMode, setAuthMode] = useState<'LOGIN' | 'REGISTER'>(() => {
+    return (localStorage.getItem('medsafe_authmode') as any) || 'LOGIN';
+  });
+
+  // Persist screen and authMode state to survive page refresh
+  useEffect(() => {
+    localStorage.setItem('medsafe_screen', screen);
+  }, [screen]);
+
+  useEffect(() => {
+    localStorage.setItem('medsafe_authmode', authMode);
+  }, [authMode]);
 
   // Shared state databases (hydrated via Real-Time API syncing)
   const [users, setUsers] = useState<UserProfile[]>([]);
@@ -241,6 +255,8 @@ export default function App() {
     }
     setCurrentUser(null);
     setScreen('LANDING');
+    localStorage.removeItem('medsafe_screen');
+    localStorage.removeItem('medsafe_authmode');
   };
 
   // Trigger manual force synchronization

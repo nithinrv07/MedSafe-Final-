@@ -21,28 +21,104 @@ export default function AuthPage({
   onRegisterUser,
   initialMode = 'LOGIN'
 }: AuthPageProps) {
-  const [mode, setMode] = useState<'LOGIN' | 'REGISTER'>(initialMode);
-  const [role, setRole] = useState<UserRole>('PATIENT');
+  const [mode, setMode] = useState<'LOGIN' | 'REGISTER'>(() => {
+    return (localStorage.getItem('medsafe_auth_form_mode') as any) || initialMode;
+  });
+  const [role, setRole] = useState<UserRole>(() => {
+    return (localStorage.getItem('medsafe_auth_role') as any) || 'PATIENT';
+  });
   
   // Form values
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [name, setName] = useState('');
-  const [licenseNumber, setLicenseNumber] = useState('');
-  const [specialty, setSpecialty] = useState('General Practice');
+  const [email, setEmail] = useState(() => localStorage.getItem('medsafe_auth_email') || '');
+  const [password, setPassword] = useState(''); // Keep empty for security
+  const [name, setName] = useState(() => localStorage.getItem('medsafe_auth_name') || '');
+  const [licenseNumber, setLicenseNumber] = useState(() => localStorage.getItem('medsafe_auth_license') || '');
+  const [specialty, setSpecialty] = useState(() => localStorage.getItem('medsafe_auth_specialty') || 'General Practice');
 
   // Interactive UI states
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
-  const [generatedKeys, setGeneratedKeys] = useState<{ publicKey: string; privateKey: string } | null>(null);
+  const [generatedKeys, setGeneratedKeys] = useState<{ publicKey: string; privateKey: string } | null>(() => {
+    const saved = localStorage.getItem('medsafe_auth_generatedkeys');
+    return saved ? JSON.parse(saved) : null;
+  });
   const [copiedKey, setCopiedKey] = useState<'PUBLIC' | 'PRIVATE' | null>(null);
 
   // OTP related states
-  const [otpMode, setOtpMode] = useState<'NONE' | 'LOGIN_VERIFY' | 'REGISTER_VERIFY'>('NONE');
+  const [otpMode, setOtpMode] = useState<'NONE' | 'LOGIN_VERIFY' | 'REGISTER_VERIFY'>(() => {
+    return (localStorage.getItem('medsafe_auth_otpmode') as any) || 'NONE';
+  });
   const [otpCode, setOtpCode] = useState<string[]>(Array(6).fill(''));
-  const [otpTimer, setOtpTimer] = useState<number>(0);
-  const [simulatedOtp, setSimulatedOtp] = useState<string | null>(null);
+  const [otpTimer, setOtpTimer] = useState<number>(() => {
+    const saved = localStorage.getItem('medsafe_auth_otptimer');
+    return saved ? parseInt(saved, 10) : 0;
+  });
+  const [simulatedOtp, setSimulatedOtp] = useState<string | null>(() => localStorage.getItem('medsafe_auth_simulatedotp'));
   const [isVerifyingOtp, setIsVerifyingOtp] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
+
+  // Clean up helper
+  const clearAuthPersistence = () => {
+    localStorage.removeItem('medsafe_auth_form_mode');
+    localStorage.removeItem('medsafe_auth_role');
+    localStorage.removeItem('medsafe_auth_email');
+    localStorage.removeItem('medsafe_auth_name');
+    localStorage.removeItem('medsafe_auth_license');
+    localStorage.removeItem('medsafe_auth_specialty');
+    localStorage.removeItem('medsafe_auth_otpmode');
+    localStorage.removeItem('medsafe_auth_otptimer');
+    localStorage.removeItem('medsafe_auth_simulatedotp');
+    localStorage.removeItem('medsafe_auth_generatedkeys');
+  };
+
+  // Sync state values with localStorage
+  React.useEffect(() => {
+    localStorage.setItem('medsafe_auth_form_mode', mode);
+  }, [mode]);
+
+  React.useEffect(() => {
+    localStorage.setItem('medsafe_auth_role', role);
+  }, [role]);
+
+  React.useEffect(() => {
+    localStorage.setItem('medsafe_auth_email', email);
+  }, [email]);
+
+  React.useEffect(() => {
+    localStorage.setItem('medsafe_auth_name', name);
+  }, [name]);
+
+  React.useEffect(() => {
+    localStorage.setItem('medsafe_auth_license', licenseNumber);
+  }, [licenseNumber]);
+
+  React.useEffect(() => {
+    localStorage.setItem('medsafe_auth_specialty', specialty);
+  }, [specialty]);
+
+  React.useEffect(() => {
+    localStorage.setItem('medsafe_auth_otpmode', otpMode);
+  }, [otpMode]);
+
+  React.useEffect(() => {
+    localStorage.setItem('medsafe_auth_otptimer', otpTimer.toString());
+  }, [otpTimer]);
+
+  React.useEffect(() => {
+    if (simulatedOtp) {
+      localStorage.setItem('medsafe_auth_simulatedotp', simulatedOtp);
+    } else {
+      localStorage.removeItem('medsafe_auth_simulatedotp');
+    }
+  }, [simulatedOtp]);
+
+  React.useEffect(() => {
+    if (generatedKeys) {
+      localStorage.setItem('medsafe_auth_generatedkeys', JSON.stringify(generatedKeys));
+    } else {
+      localStorage.removeItem('medsafe_auth_generatedkeys');
+    }
+  }, [generatedKeys]);
 
   // Countdown timer effect
   React.useEffect(() => {
@@ -189,6 +265,7 @@ export default function AuthPage({
           u => u.email.toLowerCase() === email.toLowerCase() && u.role === role
         );
         if (user) {
+          clearAuthPersistence();
           onAuthSuccess(user);
         } else {
           // Check for fallback demo accounts
@@ -201,6 +278,7 @@ export default function AuthPage({
             fallbackUser = existingUsers.find(u => u.email === 'lin@neurohealth.com');
           }
           if (fallbackUser) {
+            clearAuthPersistence();
             onAuthSuccess(fallbackUser);
           } else {
             setErrorMessage('User mapping state lost. Please try logging in again.');
@@ -285,6 +363,7 @@ export default function AuthPage({
       };
 
       onRegisterUser(newUser);
+      clearAuthPersistence();
       onAuthSuccess(newUser);
     } catch (err: any) {
       let msg = err.message || "Failed to register user to Firebase Authentication.";
@@ -326,7 +405,7 @@ export default function AuthPage({
         <div className="flex flex-col items-center">
           <button
             id="auth-back-btn"
-            onClick={onBack}
+            onClick={() => { clearAuthPersistence(); onBack(); }}
             className="self-start inline-flex items-center gap-1.5 text-xs font-mono text-blue-600 hover:text-blue-800 transition-all bg-blue-50/50 hover:bg-blue-100/50 px-3 py-1.5 rounded-lg border border-blue-200 cursor-pointer shadow-sm"
           >
             <ArrowLeft className="h-3.5 w-3.5" /> Back to Home
@@ -620,13 +699,25 @@ export default function AuthPage({
                   <div className="relative">
                     <Lock className="absolute left-3.5 top-3.5 h-4 w-4 text-zinc-400" />
                     <input
-                      type="password"
+                      type={showPassword ? "text" : "password"}
                       required
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
                       placeholder="••••••••"
-                      className="w-full bg-zinc-50 border border-zinc-200 rounded-xl py-2.5 pl-10 pr-4 text-sm text-zinc-900 placeholder-zinc-400 focus:outline-none focus:border-blue-400 focus:bg-blue-50/50 focus:ring-4 focus:ring-blue-500/10 hover:bg-white transition-all"
+                      className="w-full bg-zinc-50 border border-zinc-200 rounded-xl py-2.5 pl-10 pr-10 text-sm text-zinc-900 placeholder-zinc-400 focus:outline-none focus:border-blue-400 focus:bg-blue-50/50 focus:ring-4 focus:ring-blue-500/10 hover:bg-white transition-all"
                     />
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword(!showPassword)}
+                      className="absolute right-3.5 top-3 text-zinc-400 hover:text-zinc-655 focus:outline-none transition-colors cursor-pointer"
+                      title={showPassword ? "Hide passcode" : "Show passcode"}
+                    >
+                      {showPassword ? (
+                        <EyeOff className="h-4 w-4" />
+                      ) : (
+                        <Eye className="h-4 w-4" />
+                      )}
+                    </button>
                   </div>
                 </div>
 
