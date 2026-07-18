@@ -80,6 +80,12 @@ export function checkDrugInteractions(medicines: string[]): {
   // High clinical accuracy interaction catalog
   const interactions = [
     {
+      drugs: ['opioid', 'benzodiazepine'],
+      severity: 'CRITICAL' as const,
+      description: 'Co-administration of opioids and benzodiazepines results in profound, synergistic central nervous system (CNS) depression, severe respiratory depression, coma, and a high risk of fatal overdose.',
+      resolution: 'Strict containment: Avoid co-prescribing. If co-prescribing is clinically necessary, use the lowest effective doses and minimum durations. Monitor closely for respiratory depression and sedation.',
+    },
+    {
       drugs: ['alcohol', 'benzodiazepine'],
       severity: 'CRITICAL' as const,
       description: 'Co-ingestion of alcohol and benzodiazepines causes profound, synergistic central nervous system (CNS) depression, severe respiratory depression, coma, and life-threatening overdose risk.',
@@ -135,7 +141,7 @@ export function checkDrugInteractions(medicines: string[]): {
   }
 
   // Look for single dangerous medications
-  if (norm.some(d => d.includes('oxycodone') || d.includes('fentanyl') || d.includes('methadone'))) {
+  if (norm.some(d => d.includes('oxycodone') || d.includes('fentanyl') || d.includes('methadone') || d.includes('opioid'))) {
     return {
       severity: 'MODERATE',
       description: 'Opioid therapy warning: High risk of physiological habituation, search tracking, and central respiratory depression when combined with any alcohol/CNS depressants.',

@@ -47,7 +47,15 @@ export default function App() {
   const [currentUser, setCurrentUser] = useState<UserProfile | null>(() => {
     try {
       const savedUser = localStorage.getItem('medsafe_user');
-      return savedUser ? JSON.parse(savedUser) : null;
+      if (savedUser) {
+        const user = JSON.parse(savedUser) as UserProfile;
+        const privateKey = sessionStorage.getItem('medsafe_private_key');
+        if (privateKey) {
+          user.privateKey = privateKey;
+        }
+        return user;
+      }
+      return null;
     } catch (e) {
       console.error('Failed to parse user from localStorage', e);
       return null;
@@ -102,12 +110,20 @@ export default function App() {
     return () => clearInterval(interval);
   }, [currentUser?.id]);
 
-  // Synchronize currentUser with localStorage for session persistence
+  // Synchronize currentUser with localStorage/sessionStorage for session persistence and key security
   useEffect(() => {
     if (currentUser) {
-      localStorage.setItem('medsafe_user', JSON.stringify(currentUser));
+      if (currentUser.privateKey) {
+        sessionStorage.setItem('medsafe_private_key', currentUser.privateKey);
+      } else {
+        sessionStorage.removeItem('medsafe_private_key');
+      }
+      const userCopy = { ...currentUser };
+      delete userCopy.privateKey;
+      localStorage.setItem('medsafe_user', JSON.stringify(userCopy));
     } else {
       localStorage.removeItem('medsafe_user');
+      sessionStorage.removeItem('medsafe_private_key');
     }
   }, [currentUser]);
 
@@ -258,6 +274,21 @@ export default function App() {
     }
   };
 
+  // Patient submit connection request (pre-authorized or pending)
+  const handlePatientSubmitRequest = async (newRequest: AccessRequest) => {
+    // Optimistic update
+    setRequests(prev => [newRequest, ...prev]);
+    try {
+      await fetch('/api/requests/submit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(newRequest),
+      });
+    } catch (err) {
+      console.error('Failed to submit access request:', err);
+    }
+  };
+
   const handleLogout = () => {
     if (currentUser) {
       handleAddLog(
@@ -339,11 +370,13 @@ export default function App() {
             records={records}
             requests={requests}
             logs={logs}
+            allUsers={users}
             onLogout={handleLogout}
             onAddRecord={handleAddRecord}
             onUpdateRecord={handleUpdateRecord}
             onUpdateRequestHandler={handleUpdateRequestStatus}
             onAddLog={handleAddLog}
+            onSubmitRequest={handlePatientSubmitRequest}
           />
         )}
 

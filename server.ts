@@ -143,7 +143,56 @@ function seedDatabase() {
   ];
 }
 
-seedDatabase();
+const DB_URL = process.env.FIREBASE_DATABASE_URL;
+
+async function saveToFirebase() {
+  if (!DB_URL) return;
+  try {
+    const res = await fetch(`${DB_URL}/.json`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ users, records, requests, logs })
+    });
+    if (!res.ok) {
+      throw new Error(`Failed to save state: ${res.statusText}`);
+    }
+  } catch (error) {
+    console.error("[FIREBASE] Error saving state to Firebase:", error);
+  }
+}
+
+async function loadFromFirebase() {
+  if (!DB_URL) {
+    console.log("[FIREBASE] No database URL configured in .env. Using in-memory state.");
+    seedDatabase();
+    return;
+  }
+  try {
+    const res = await fetch(`${DB_URL}/.json`);
+    if (!res.ok) {
+      throw new Error(`Failed to fetch state: ${res.statusText}`);
+    }
+    const data = await res.json();
+    if (data && (data.users || data.records || data.requests || data.logs)) {
+      users = data.users || [];
+      records = data.records || [];
+      requests = data.requests || [];
+      logs = data.logs || [];
+      console.log("[FIREBASE] State loaded successfully from Firebase Realtime Database.");
+    } else {
+      console.log("[FIREBASE] Database is empty. Seeding database...");
+      seedDatabase();
+      await saveToFirebase();
+    }
+  } catch (error) {
+    console.error("[FIREBASE] Error loading state from Firebase:", error);
+    console.log("[FIREBASE] Falling back to seeding local database.");
+    seedDatabase();
+  }
+}
+
+loadFromFirebase();
+
 
 interface OTPStoreVal {
   otp: string;
@@ -357,7 +406,7 @@ app.post("/api/ocr/analyze", async (req, res) => {
       }
     });
 
-    const text = response.text();
+    const text = response.text;
     if (!text) {
       throw new Error("Empty response from Gemini");
     }
@@ -403,7 +452,7 @@ app.get("/api/state", (req, res) => {
 });
 
 // Register User
-app.post("/api/users/register", (req, res) => {
+app.post("/api/users/register", async (req, res) => {
   const newUser: UserProfile = req.body;
   if (!newUser || !newUser.id || !newUser.email) {
     return res.status(400).json({ error: "Invalid user data" });
@@ -413,21 +462,23 @@ app.post("/api/users/register", (req, res) => {
     return res.status(400).json({ error: "User already exists on ledger" });
   }
   users.push(newUser);
+  await saveToFirebase();
   res.json({ success: true, user: newUser });
 });
 
 // Add Medical Record
-app.post("/api/records", (req, res) => {
+app.post("/api/records", async (req, res) => {
   const newRec: MedicalRecord = req.body;
   if (!newRec || !newRec.id || !newRec.patientId) {
     return res.status(400).json({ error: "Invalid medical record data" });
   }
   records.unshift(newRec);
+  await saveToFirebase();
   res.json({ success: true, record: newRec });
 });
 
 // Update Medical Record
-app.post("/api/records/update", (req, res) => {
+app.post("/api/records/update", async (req, res) => {
   const updatedRec: MedicalRecord = req.body;
   if (!updatedRec || !updatedRec.id || !updatedRec.patientId) {
     return res.status(400).json({ error: "Invalid medical record data" });
@@ -443,21 +494,23 @@ app.post("/api/records/update", (req, res) => {
   if (!updated) {
     return res.status(404).json({ error: "Record not found" });
   }
+  await saveToFirebase();
   res.json({ success: true, record: updatedRec });
 });
 
 // Submit Access Request (by doctor)
-app.post("/api/requests/submit", (req, res) => {
+app.post("/api/requests/submit", async (req, res) => {
   const newRequest: AccessRequest = req.body;
   if (!newRequest || !newRequest.id || !newRequest.patientId) {
     return res.status(400).json({ error: "Invalid request parameters" });
   }
   requests.unshift(newRequest);
+  await saveToFirebase();
   res.json({ success: true, request: newRequest });
 });
 
 // Update Access Request Status (approve, reject, revoke)
-app.post("/api/requests/update", (req, res) => {
+app.post("/api/requests/update", async (req, res) => {
   const { requestId, status, digitalSignature } = req.body;
   if (!requestId || !status) {
     return res.status(400).json({ error: "Missing parameters" });
@@ -478,22 +531,25 @@ app.post("/api/requests/update", (req, res) => {
   if (!updated) {
     return res.status(404).json({ error: "Request not found" });
   }
+  await saveToFirebase();
   res.json({ success: true });
 });
 
 // Log audit activities
-app.post("/api/logs", (req, res) => {
+app.post("/api/logs", async (req, res) => {
   const newLog: AuditLog = req.body;
   if (!newLog || !newLog.id) {
     return res.status(400).json({ error: "Invalid log entry" });
   }
   logs.unshift(newLog);
+  await saveToFirebase();
   res.json({ success: true });
 });
 
 // Reset State
-app.post("/api/reset", (req, res) => {
+app.post("/api/reset", async (req, res) => {
   seedDatabase();
+  await saveToFirebase();
   res.json({ success: true, message: "Database re-seeded successfully" });
 });
 

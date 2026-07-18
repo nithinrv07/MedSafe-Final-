@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Shield, Key, FileText, Lock, Plus, Check, X, LogOut, Radio, HelpCircle, Eye, EyeOff, AlertTriangle, AlertCircle, Copy, Database, Sparkles, RefreshCcw, UploadCloud, Image, Camera, Paperclip, Search, ZoomIn, Loader2 } from 'lucide-react';
+import { Shield, Key, FileText, Lock, Plus, Check, X, LogOut, Radio, HelpCircle, Eye, EyeOff, AlertTriangle, AlertCircle, Copy, Database, Sparkles, RefreshCcw, UploadCloud, Image, Camera, Paperclip, Search, ZoomIn, Loader2, Network } from 'lucide-react';
 import { UserProfile, MedicalRecord, AccessRequest, AuditLog } from '../types';
 import { encryptRecord, decryptRecord, generateHash, signRequest, checkDrugInteractions } from '../utils/cryptoSim';
 import EncryptionVisualizer from './EncryptionVisualizer';
@@ -10,11 +10,13 @@ interface PatientDashboardProps {
   records: MedicalRecord[];
   requests: AccessRequest[];
   logs: AuditLog[];
+  allUsers: UserProfile[];
   onLogout: () => void;
   onAddRecord: (record: MedicalRecord) => void;
   onUpdateRecord: (record: MedicalRecord) => void;
   onUpdateRequestHandler: (requestId: string, status: 'APPROVED' | 'REJECTED' | 'REVOKED', digitalSignature?: string) => void;
   onAddLog: (action: string, status: 'SUCCESS' | 'WARNING' | 'ALERT', details: string) => void;
+  onSubmitRequest: (request: AccessRequest) => void;
 }
 
 export default function PatientDashboard({
@@ -22,14 +24,66 @@ export default function PatientDashboard({
   records,
   requests,
   logs,
+  allUsers,
   onLogout,
   onAddRecord,
   onUpdateRecord,
   onUpdateRequestHandler,
   onAddLog,
+  onSubmitRequest,
 }: PatientDashboardProps) {
   // Navigation internal view
-  const [activeTab, setActiveTab] = useState<'LOCKER' | 'DOCTORS' | 'LEDGER' | 'KEYCARD'>('LOCKER');
+  const [activeTab, setActiveTab] = useState<'LOCKER' | 'DOCTORS' | 'LEDGER' | 'KEYCARD' | 'NODEMAP'>('LOCKER');
+
+  // Interactive Node Map State Declarations
+  const [searchQuery, setSearchQuery] = useState('');
+  const [preAuthPurpose, setPreAuthPurpose] = useState('Routine Consultation');
+  const [preAuthPrivateKey, setPreAuthPrivateKey] = useState(user.privateKey || '');
+  const [preAuthError, setPreAuthError] = useState('');
+  const [preAuthSuccess, setPreAuthSuccess] = useState(false);
+  const [showAllDirectoryNodes, setShowAllDirectoryNodes] = useState(false);
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+
+  const handlePreAuthorizeDoctor = (doc: UserProfile) => {
+    if (!preAuthPrivateKey || !preAuthPrivateKey.includes('RSA PRIVATE KEY')) {
+      setPreAuthError('Invalid signature credential. Your full PEM private key is required to build digital signature.');
+      return;
+    }
+
+    if (preAuthPrivateKey !== user.privateKey) {
+      setPreAuthError('Validation Failure: Signature key mismatch.');
+      return;
+    }
+
+    const newReqId = `req-${Math.random().toString(36).substring(2, 9)}`;
+    const signature = signRequest(newReqId, preAuthPrivateKey);
+    const newRequest: AccessRequest = {
+      id: newReqId,
+      patientId: user.id,
+      patientName: user.name,
+      doctorId: doc.id,
+      doctorName: doc.name,
+      doctorSpecialty: doc.specialty || 'General Practitioner',
+      requestedPurpose: preAuthPurpose || 'Authorized patient connection',
+      status: 'APPROVED',
+      requestedAt: new Date().toISOString(),
+      decidedAt: new Date().toISOString(),
+      digitalSignature: signature
+    };
+
+    onSubmitRequest(newRequest);
+    onAddLog(
+      'Pre-Authorized Clinician Connection',
+      'SUCCESS',
+      `Patient Eleanor Vance pre-authorized secure ledger read token to ${doc.name} for purpose: "${preAuthPurpose}".`
+    );
+
+    setPreAuthSuccess(true);
+    setPreAuthError('');
+    setTimeout(() => {
+      setPreAuthSuccess(false);
+    }, 3000);
+  };
 
   // Input States for New Record Creation
   const [showAddForm, setShowAddForm] = useState(false);
@@ -420,6 +474,16 @@ export default function PatientDashboard({
               {filteredRequests.some(r => r.status === 'PENDING') && (
                 <span className="h-2 w-2 rounded-full bg-amber-500 animate-ping" />
               )}
+            </button>
+            <button
+              onClick={() => { setActiveTab('NODEMAP'); setSigningRequestId(null); }}
+              className={`w-full text-left py-2.5 px-4 rounded-xl text-xs font-mono flex items-center gap-2.5 transition-all cursor-pointer ${
+                activeTab === 'NODEMAP'
+                  ? 'bg-teal-700 text-white border border-teal-800 font-bold shadow-sm'
+                  : 'text-zinc-500 hover:text-zinc-900 hover:bg-zinc-50 border border-transparent'
+              }`}
+            >
+              <Network className="h-4 w-4" /> Connection Node Map
             </button>
             <button
               onClick={() => setActiveTab('LEDGER')}
@@ -1397,6 +1461,709 @@ export default function PatientDashboard({
                     </div>
                   )}
                 </div>
+              </div>
+
+            </div>
+
+          </div>
+        )}
+
+        {/* TAB 5: Interactive Node Map */}
+        {activeTab === 'NODEMAP' && (
+          <div id="patient-nodemap-view" className="space-y-6 bg-blue-50/30 backdrop-blur-sm p-6 md:p-8 rounded-3xl border border-blue-100/50 shadow-sm animate-fade-in">
+            {/* Header control */}
+            <div className="bg-teal-50/70 p-5 rounded-2xl border border-teal-100/60 mb-6 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+              <div>
+                <h3 className="font-display text-2xl font-bold text-teal-950">Secure Connection Node Map</h3>
+                <p className="text-sm font-sans text-teal-800/80 mt-1 leading-relaxed">
+                  Visualize and manage your real-time secure ledger connections to clinicians and hospitals. Streaming lines represent verified cryptographic read paths.
+                </p>
+              </div>
+              <div className="flex items-center gap-2 bg-white/80 border border-teal-100 px-3 py-1.5 rounded-xl text-xs font-mono font-medium shadow-sm">
+                <span className="h-2.5 w-2.5 rounded-full bg-teal-500 animate-pulse" />
+                <span>Map Sync Active</span>
+              </div>
+            </div>
+
+            {/* SVG Visualizer and Info Panel Grid */}
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+              
+              {/* Map Canvas - spans 7 cols */}
+              <div className="lg:col-span-7 bg-white border border-zinc-200 rounded-3xl p-4 shadow-sm overflow-hidden flex flex-col items-center justify-center relative min-h-[460px]">
+                {/* Legend Overlay */}
+                <div className="absolute top-4 left-4 z-10 bg-zinc-50/90 border border-zinc-200/60 rounded-xl p-2.5 space-y-1.5 text-[10px] font-mono text-zinc-500 shadow-sm">
+                  <div className="flex items-center gap-1.5">
+                    <span className="h-2.5 w-2.5 rounded-full bg-teal-500 shadow-inner" />
+                    <span className="font-semibold text-zinc-700">Approved (Decryption Sync)</span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="h-2.5 w-2.5 rounded-full bg-amber-500 shadow-inner" />
+                    <span className="font-semibold text-zinc-700">Pending Consent Authorization</span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="h-2.5 w-2.5 rounded-full bg-zinc-400 shadow-inner" />
+                    <span className="font-semibold text-zinc-700">Revoked / Disconnected</span>
+                  </div>
+                </div>
+
+                {/* SVG canvas */}
+                {(() => {
+                  // Core Node positions setup
+                  const cx = 220;
+                  const cy = 200;
+                  const R = 120;
+
+                  // Find unique connections
+                  const doctorConnections: Record<string, {
+                    doctorId: string;
+                    doctorName: string;
+                    doctorSpecialty: string;
+                    status: 'APPROVED' | 'PENDING' | 'REVOKED' | 'REJECTED' | 'DISCONNECTED';
+                    request?: AccessRequest;
+                    email: string;
+                  }> = {};
+
+                  filteredRequests.forEach(req => {
+                    const existing = doctorConnections[req.doctorId];
+                    if (!existing) {
+                      const docProfile = allUsers.find(u => u.id === req.doctorId);
+                      doctorConnections[req.doctorId] = {
+                        doctorId: req.doctorId,
+                        doctorName: req.doctorName,
+                        doctorSpecialty: req.doctorSpecialty,
+                        status: req.status,
+                        request: req,
+                        email: docProfile?.email || ''
+                      };
+                    } else {
+                      const isMoreActive = 
+                        (req.status === 'APPROVED') ||
+                        (req.status === 'PENDING' && existing.status !== 'APPROVED');
+                      
+                      if (isMoreActive) {
+                        doctorConnections[req.doctorId] = {
+                          ...existing,
+                          status: req.status,
+                          request: req
+                        };
+                      }
+                    }
+                  });
+
+                  // Add other doctors from directory
+                  allUsers.filter(u => u.role === 'DOCTOR').forEach(doc => {
+                    if (!doctorConnections[doc.id]) {
+                      doctorConnections[doc.id] = {
+                        doctorId: doc.id,
+                        doctorName: doc.name,
+                        doctorSpecialty: doc.specialty || 'General Practitioner',
+                        status: 'DISCONNECTED',
+                        email: doc.email
+                      };
+                    }
+                  });
+
+                  const nodesToShow = Object.values(doctorConnections).filter(
+                    d => d.status !== 'DISCONNECTED' || showAllDirectoryNodes
+                  );
+
+                  return (
+                    <>
+                      <div className="absolute top-4 right-4 z-10">
+                        <label className="flex items-center gap-2 text-[10px] font-mono font-bold text-zinc-500 cursor-pointer bg-zinc-50/90 border border-zinc-200/60 rounded-xl p-2 select-none hover:bg-zinc-150 transition-colors shadow-sm">
+                          <input 
+                            type="checkbox" 
+                            checked={showAllDirectoryNodes} 
+                            onChange={(e) => setShowAllDirectoryNodes(e.target.checked)}
+                            className="rounded text-teal-650 focus:ring-teal-500 h-3.5 w-3.5 cursor-pointer"
+                          />
+                          Show Directory Registry
+                        </label>
+                      </div>
+
+                      <svg width="440" height="380" className="w-full max-w-[440px] h-[380px] select-none overflow-visible">
+                        {/* Define gradients for animations */}
+                        <defs>
+                          <radialGradient id="patientGlow" cx="50%" cy="50%" r="50%">
+                            <stop offset="0%" stopColor="#2dd4bf" stopOpacity="0.4" />
+                            <stop offset="100%" stopColor="#2dd4bf" stopOpacity="0" />
+                          </radialGradient>
+                          <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+                            <feDropShadow dx="0" dy="2" stdDeviation="3" floodOpacity="0.1" />
+                          </filter>
+                        </defs>
+
+                        {/* RENDER EDGES FIRST (so nodes sit on top) */}
+                        {nodesToShow.map((node, index) => {
+                          const theta = (index * 2 * Math.PI / nodesToShow.length) - Math.PI / 2;
+                          const x = cx + R * Math.cos(theta);
+                          const y = cy + R * Math.sin(theta);
+
+                          // Edge visual depending on status
+                          if (node.status === 'APPROVED') {
+                            return (
+                              <g key={`edge-${node.doctorId}`}>
+                                {/* Glowing outer beam */}
+                                <line x1={cx} y1={cy} x2={x} y2={y} stroke="#2dd4bf" strokeWidth="6" strokeOpacity="0.15" strokeLinecap="round" />
+                                {/* Solid teal path */}
+                                <line x1={cx} y1={cy} x2={x} y2={y} stroke="#0d9488" strokeWidth="2.5" strokeLinecap="round" />
+                                {/* Streaming particles */}
+                                <circle r="4" fill="#5eead4">
+                                  <animate attributeName="cx" from={cx} to={x} dur="1.8s" repeatCount="indefinite" />
+                                  <animate attributeName="cy" from={cy} to={y} dur="1.8s" repeatCount="indefinite" />
+                                </circle>
+                                <circle r="3" fill="#ffffff">
+                                  <animate attributeName="cx" from={cx} to={x} dur="1.8s" begin="0.6s" repeatCount="indefinite" />
+                                  <animate attributeName="cy" from={cy} to={y} dur="1.8s" begin="0.6s" repeatCount="indefinite" />
+                                </circle>
+                              </g>
+                            );
+                          } else if (node.status === 'PENDING') {
+                            return (
+                              <g key={`edge-${node.doctorId}`}>
+                                {/* Dashed amber path */}
+                                <line 
+                                  x1={cx} y1={cy} x2={x} y2={y} 
+                                  stroke="#f59e0b" strokeWidth="2" 
+                                  strokeDasharray="6, 4" 
+                                  strokeLinecap="round"
+                                />
+                                {/* Pulsing amber particle */}
+                                <circle r="4.5" fill="#fbbf24">
+                                  <animate attributeName="cx" from={cx} to={x} dur="2.8s" repeatCount="indefinite" />
+                                  <animate attributeName="cy" from={cy} to={y} dur="2.8s" repeatCount="indefinite" />
+                                  <animate attributeName="r" values="3.5;5.5;3.5" dur="1.5s" repeatCount="indefinite" />
+                                </circle>
+                              </g>
+                            );
+                          } else {
+                            // Revoked / disconnected
+                            return (
+                              <line 
+                                key={`edge-${node.doctorId}`}
+                                x1={cx} y1={cy} x2={x} y2={y} 
+                                stroke="#cbd5e1" strokeWidth="1.5" 
+                                strokeDasharray="3, 5" 
+                                strokeLinecap="round" 
+                              />
+                            );
+                          }
+                        })}
+
+                        {/* RENDER CLINICIAN NODES */}
+                        {nodesToShow.map((node, index) => {
+                          const theta = (index * 2 * Math.PI / nodesToShow.length) - Math.PI / 2;
+                          const x = cx + R * Math.cos(theta);
+                          const y = cy + R * Math.sin(theta);
+                          const isSelected = selectedNodeId === node.doctorId;
+                          
+                          // Style states based on status
+                          let ringColor = 'stroke-zinc-200';
+                          let bgColor = 'fill-white';
+                          let initialsColor = 'fill-zinc-800';
+                          
+                          if (node.status === 'APPROVED') {
+                            ringColor = isSelected ? 'stroke-teal-600 stroke-[3.5]' : 'stroke-teal-500';
+                            bgColor = 'fill-teal-50/95';
+                            initialsColor = 'fill-teal-900';
+                          } else if (node.status === 'PENDING') {
+                            ringColor = isSelected ? 'stroke-amber-600 stroke-[3.5]' : 'stroke-amber-500';
+                            bgColor = 'fill-amber-50/95';
+                            initialsColor = 'fill-amber-900';
+                          } else if (node.status === 'REVOKED' || node.status === 'REJECTED') {
+                            ringColor = isSelected ? 'stroke-red-500 stroke-[3.5]' : 'stroke-red-200';
+                            bgColor = 'fill-red-50/40';
+                            initialsColor = 'fill-red-800';
+                          } else {
+                            ringColor = isSelected ? 'stroke-zinc-500 stroke-[3.5]' : 'stroke-zinc-300 stroke-dasharray-[3,3]';
+                            bgColor = 'fill-zinc-50/50';
+                            initialsColor = 'fill-zinc-500';
+                          }
+
+                          const initials = node.doctorName
+                            .split(' ')
+                            .filter(w => w !== 'Dr.' && w !== 'Dr')
+                            .map(w => w[0])
+                            .join('')
+                            .substring(0, 2)
+                            .toUpperCase();
+
+                          return (
+                            <g 
+                              key={`node-${node.doctorId}`}
+                              className="cursor-pointer group/node"
+                              onClick={() => {
+                                setSelectedNodeId(node.doctorId);
+                                setPreAuthPurpose('Routine Consultation');
+                                setPreAuthPrivateKey(user.privateKey || '');
+                                setPreAuthError('');
+                                setPreAuthSuccess(false);
+                              }}
+                            >
+                              {/* Hover glow aura */}
+                              <circle 
+                                cx={x} cy={y} r="28" 
+                                className="fill-transparent group-hover/node:fill-zinc-100/50 transition-all duration-300"
+                              />
+                              
+                              {/* Node Circle */}
+                              <circle 
+                                cx={x} cy={y} r="20" 
+                                className={`${bgColor} ${ringColor} stroke-[2] transition-all`}
+                                filter="url(#shadow)"
+                              />
+
+                              {/* Initials Text */}
+                              <text 
+                                x={x} y={y + 3.5} 
+                                textAnchor="middle" 
+                                className={`text-[10px] font-mono font-bold ${initialsColor}`}
+                              >
+                                {initials || 'DR'}
+                              </text>
+
+                              {/* Small status overlay icon badge */}
+                              {node.status === 'APPROVED' && (
+                                <g transform={`translate(${x + 10}, ${y - 15})`}>
+                                  <circle r="5" fill="#0d9488" />
+                                  <path d="M-2.5,-0.5 L-0.5,1.5 L2.5,-1.5" fill="none" stroke="#ffffff" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                                </g>
+                              )}
+                              {node.status === 'PENDING' && (
+                                <g transform={`translate(${x + 10}, ${y - 15})`}>
+                                  <circle r="5" fill="#f59e0b" />
+                                  <circle r="3" fill="none" stroke="#ffffff" strokeWidth="0.8" />
+                                  <line x1="0" y1="-1.5" x2="0" y2="0" stroke="#ffffff" strokeWidth="0.8" />
+                                  <line x1="0" y1="0" x2="1.5" y2="0" stroke="#ffffff" strokeWidth="0.8" />
+                                </g>
+                              )}
+                              {(node.status === 'REVOKED' || node.status === 'REJECTED') && (
+                                <g transform={`translate(${x + 10}, ${y - 15})`}>
+                                  <circle r="5" fill="#ef4444" />
+                                  <line x1="-1.5" y1="-1.5" x2="1.5" y2="1.5" stroke="#ffffff" strokeWidth="1.2" strokeLinecap="round" />
+                                  <line x1="1.5" y1="-1.5" x2="-1.5" y2="1.5" stroke="#ffffff" strokeWidth="1.2" strokeLinecap="round" />
+                                </g>
+                              )}
+
+                              {/* Text label below */}
+                              <text 
+                                x={x} y={y + 32} 
+                                textAnchor="middle" 
+                                className={`text-[9px] font-sans font-bold ${isSelected ? 'fill-teal-950 font-extrabold scale-103' : 'fill-zinc-800'}`}
+                              >
+                                {node.doctorName.replace('Dr. ', '')}
+                              </text>
+                              <text 
+                                x={x} y={y + 41} 
+                                textAnchor="middle" 
+                                className="text-[7.5px] font-mono fill-zinc-400"
+                              >
+                                {node.doctorSpecialty}
+                              </text>
+                            </g>
+                          );
+                        })}
+
+                        {/* PULSING PATIENT CENTRAL NODE */}
+                        {/* Concentric expanding ripples */}
+                        <circle cx={cx} cy={cy} r="38" fill="none" stroke="#0d9488" strokeWidth="1.5" opacity="0.3">
+                          <animate attributeName="r" values="28;44;28" dur="2.5s" repeatCount="indefinite" />
+                          <animate attributeName="opacity" values="0.4;0;0.4" dur="2.5s" repeatCount="indefinite" />
+                        </circle>
+                        <circle cx={cx} cy={cy} r="30" fill="url(#patientGlow)" />
+                        <circle 
+                          cx={cx} cy={cy} r="26" 
+                          fill="#0f172a" 
+                          stroke="#2dd4bf" 
+                          strokeWidth="3" 
+                          filter="url(#shadow)"
+                          className="cursor-pointer"
+                          onClick={() => setSelectedNodeId('patient')}
+                        />
+                        <text 
+                          x={cx} y={cy + 4} 
+                          textAnchor="middle" 
+                          fill="#2dd4bf" 
+                          className="text-[11px] font-mono font-bold tracking-wider cursor-pointer"
+                          onClick={() => setSelectedNodeId('patient')}
+                        >
+                          {user.name.split(' ').map(w => w[0]).join('').toUpperCase()}
+                        </text>
+                        <text 
+                          x={cx} y={cy + 38} 
+                          textAnchor="middle" 
+                          fill="#0f172a" 
+                          className="text-[9px] font-sans font-bold uppercase tracking-wider"
+                        >
+                          Vault Owner
+                        </text>
+                      </svg>
+                    </>
+                  );
+                })()}
+              </div>
+
+              {/* Info Detail Panel - spans 5 cols */}
+              <div className="lg:col-span-5 bg-white border border-zinc-200 rounded-3xl p-6 shadow-sm min-h-[460px] flex flex-col justify-between">
+                {(() => {
+                  if (!selectedNodeId) {
+                    return (
+                      <div className="my-auto text-center py-8 space-y-3">
+                        <div className="h-12 w-12 rounded-2xl bg-teal-50 text-teal-600 border border-teal-150 flex items-center justify-center mx-auto shadow-sm animate-pulse">
+                          <Network className="h-6 w-6" />
+                        </div>
+                        <h4 className="font-display font-bold text-zinc-900 text-sm uppercase tracking-wide">Inspection Ledger</h4>
+                        <p className="text-zinc-500 font-sans text-xs leading-relaxed max-w-[240px] mx-auto">
+                          Click on any doctor node on the map to review cryptographic signatures, pre-authorize new access keys, or revoke read permissions instantly.
+                        </p>
+                      </div>
+                    );
+                  }
+
+                  if (selectedNodeId === 'patient') {
+                    return (
+                      <div className="space-y-4">
+                        <div className="flex items-center gap-2.5 pb-3.5 border-b border-zinc-150">
+                          <div className="h-9 w-9 rounded-xl bg-zinc-900 text-teal-400 flex items-center justify-center font-bold font-mono">
+                            {user.name.split(' ').map(n => n[0]).join('').toUpperCase()}
+                          </div>
+                          <div>
+                            <h4 className="font-display font-bold text-zinc-900 text-sm">{user.name}</h4>
+                            <span className="text-[9px] font-mono text-zinc-400 uppercase tracking-wider block font-bold">Ledger Root Patient Vault</span>
+                          </div>
+                        </div>
+
+                        <div className="space-y-3.5 text-xs">
+                          <div>
+                            <span className="text-[9px] font-mono text-zinc-400 block uppercase font-bold">Secure ID Hash</span>
+                            <span className="font-mono text-[9px] text-zinc-800 break-all select-all font-semibold bg-zinc-50 px-2 py-1.5 rounded border border-zinc-200 block mt-1">{generateHash(user.id)}</span>
+                          </div>
+
+                          <div>
+                            <span className="text-[9px] font-mono text-zinc-400 block uppercase font-bold">Registered Account email</span>
+                            <span className="font-mono text-zinc-700 block">{user.email}</span>
+                          </div>
+
+                          <div>
+                            <span className="text-[9px] font-mono text-zinc-400 block uppercase font-bold">Authorized Keys Status</span>
+                            <span className="text-emerald-700 font-bold block mt-0.5">✓ 2048-Bit RSA Keypair Embedded</span>
+                          </div>
+
+                          <div className="pt-2 border-t border-zinc-100 leading-relaxed font-sans text-zinc-500">
+                            You are the primary vault owner. All clinical connection permissions are signed with your client private key and recorded immutably on-chain.
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  }
+
+                  // Retrieve connection details
+                  const docProfile = allUsers.find(u => u.id === selectedNodeId);
+                  const email = docProfile?.email || '';
+                  
+                  // Compute mock clinic name based on email domain
+                  let clinicName = 'General Clinical Practice';
+                  if (email.includes('metrocardio')) clinicName = 'Metro Cardiology Clinic';
+                  else if (email.includes('neurohealth')) clinicName = 'Neuro Health Center';
+
+                  // Search requests
+                  const docRequests = filteredRequests.filter(req => req.doctorId === selectedNodeId);
+                  // Grab active request, or pending request, or most recent request
+                  const currentReq = docRequests.find(r => r.status === 'APPROVED') || 
+                                     docRequests.find(r => r.status === 'PENDING') ||
+                                     docRequests[0];
+                  
+                  const status = currentReq ? currentReq.status : 'DISCONNECTED';
+
+                  return (
+                    <div className="space-y-4 flex-1 flex flex-col justify-between">
+                      <div className="space-y-4">
+                        
+                        {/* Header details */}
+                        <div className="flex items-start justify-between gap-2 pb-3 border-b border-zinc-150">
+                          <div>
+                            <h4 className="font-display font-bold text-zinc-900 text-sm">{docProfile?.name || `Dr. ${selectedNodeId}`}</h4>
+                            <span className="text-[9px] font-mono text-zinc-400 block uppercase font-bold mt-0.5">{docProfile?.specialty || 'Medical Specialist'} • {clinicName}</span>
+                          </div>
+                          
+                          <div>
+                            {status === 'APPROVED' && (
+                              <span className="px-2 py-0.5 text-[9px] font-mono bg-emerald-50 text-emerald-800 border border-emerald-250 rounded-full font-bold">
+                                ACTIVE SYNC
+                              </span>
+                            )}
+                            {status === 'PENDING' && (
+                              <span className="px-2 py-0.5 text-[9px] font-mono bg-amber-50 text-amber-800 border border-amber-200 rounded-full font-bold animate-pulse">
+                                PENDING
+                              </span>
+                            )}
+                            {status === 'REVOKED' && (
+                              <span className="px-2 py-0.5 text-[9px] font-mono bg-zinc-100 text-zinc-500 border border-zinc-200 rounded-full font-bold">
+                                REVOKED
+                              </span>
+                            )}
+                            {status === 'REJECTED' && (
+                              <span className="px-2 py-0.5 text-[9px] font-mono bg-red-50 text-red-700 border border-red-200 rounded-full font-bold">
+                                DECLINED
+                              </span>
+                            )}
+                            {status === 'DISCONNECTED' && (
+                              <span className="px-2 py-0.5 text-[9px] font-mono bg-zinc-100 text-zinc-400 border border-zinc-200 rounded-full">
+                                NO CONNECTION
+                              </span>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Cryptographic details or Authorization Form */}
+                        {status === 'DISCONNECTED' || status === 'REVOKED' || status === 'REJECTED' ? (
+                          // Pre-authorization form
+                          <div className="space-y-3 pt-2 text-xs">
+                            <h5 className="font-display font-bold text-zinc-900 text-xs uppercase tracking-wide flex items-center gap-1.5 text-teal-800">
+                              <Key className="h-3.5 w-3.5" /> Pre-Authorize Clinician
+                            </h5>
+                            <p className="text-zinc-500 text-[11px] leading-relaxed">
+                              Grant direct, encrypted access to your medicine records and diagnostics. Confirm below using your asymmetric key.
+                            </p>
+
+                            {preAuthError && (
+                              <div className="p-2 bg-red-50 border border-red-200 text-[10px] text-red-750 rounded-lg">
+                                {preAuthError}
+                              </div>
+                            )}
+
+                            {preAuthSuccess && (
+                              <div className="p-2 bg-emerald-50 border border-emerald-250 text-[10px] text-emerald-800 rounded-lg">
+                                ✓ Connection authorized and published to ledger node!
+                              </div>
+                            )}
+
+                            <div className="space-y-2">
+                              <div>
+                                <label className="block text-[9px] font-mono text-zinc-400 uppercase font-semibold mb-1">
+                                  Access Purpose / Justification
+                                </label>
+                                <input 
+                                  type="text"
+                                  value={preAuthPurpose}
+                                  onChange={(e) => setPreAuthPurpose(e.target.value)}
+                                  placeholder="e.g. Consultation check, medication review"
+                                  className="w-full bg-zinc-50 border border-zinc-200 rounded-lg p-1.5 text-[11px] focus:outline-none focus:border-zinc-300"
+                                />
+                              </div>
+
+                              <div>
+                                <label className="block text-[9px] font-mono text-zinc-450 uppercase font-semibold mb-1">
+                                  Your Secret PEM Private Key
+                                </label>
+                                <textarea
+                                  rows={3}
+                                  value={preAuthPrivateKey}
+                                  onChange={(e) => setPreAuthPrivateKey(e.target.value)}
+                                  placeholder="-----BEGIN RSA PRIVATE KEY-----"
+                                  className="w-full bg-zinc-50 border border-zinc-200 rounded-lg p-1.5 text-[9px] font-mono focus:outline-none focus:border-zinc-300"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => setPreAuthPrivateKey(user.privateKey || '')}
+                                  className="text-[8px] font-mono text-teal-700 hover:underline mt-1 font-bold bg-transparent border-0 cursor-pointer block text-left"
+                                >
+                                  Auto-fill private key block
+                                </button>
+                              </div>
+
+                              <button
+                                type="button"
+                                onClick={() => docProfile && handlePreAuthorizeDoctor(docProfile)}
+                                className="w-full bg-teal-850 hover:bg-teal-900 text-white font-bold py-2 rounded-xl text-xs font-mono tracking-wide mt-2 shadow-sm cursor-pointer"
+                              >
+                                Sign & Establish Connection
+                              </button>
+                            </div>
+
+                          </div>
+                        ) : (
+                          // Connection stats & hashes
+                          <div className="space-y-3.5 text-xs">
+                            <div>
+                              <span className="text-[9px] font-mono text-zinc-400 block uppercase font-semibold">Clinician Public Key Directory Address</span>
+                              <span className="font-mono text-[9px] text-zinc-500 break-all select-all block bg-zinc-50 p-1.5 rounded border border-zinc-200 mt-1 max-h-[60px] overflow-y-auto">{docProfile?.publicKey || 'No key loaded'}</span>
+                            </div>
+
+                            {currentReq && (
+                              <>
+                                <div>
+                                  <span className="text-[9px] font-mono text-zinc-400 block uppercase font-semibold">Connection Established Purpose</span>
+                                  <p className="font-sans text-zinc-700 italic mt-0.5 bg-zinc-50/50 p-2 rounded">"{currentReq.requestedPurpose}"</p>
+                                </div>
+
+                                {currentReq.digitalSignature && (
+                                  <div>
+                                    <span className="text-[9px] font-mono text-zinc-400 block uppercase font-semibold flex items-center justify-between">
+                                      <span>Cryptographic Signature Proof</span>
+                                      <button 
+                                        onClick={() => {
+                                          navigator.clipboard.writeText(currentReq.digitalSignature || '');
+                                          onAddLog('Signature Copied', 'SUCCESS', `Cryptographic access signature token for ${currentReq.doctorName} copied to clipboard.`);
+                                        }}
+                                        className="text-[8px] font-mono text-teal-750 hover:underline cursor-pointer"
+                                      >
+                                        Copy Token
+                                      </button>
+                                    </span>
+                                    <span className="font-mono text-[9px] text-teal-750 break-all select-all font-semibold block bg-teal-50/20 p-2 rounded border border-teal-100 mt-1">{currentReq.digitalSignature}</span>
+                                  </div>
+                                )}
+
+                                <div className="text-[9px] font-mono text-zinc-450 space-y-0.5 pt-1 border-t border-zinc-100">
+                                  <div>Request Created: {new Date(currentReq.requestedAt).toLocaleString()}</div>
+                                  {currentReq.decidedAt && <div>Signature Sealed: {new Date(currentReq.decidedAt).toLocaleString()}</div>}
+                                </div>
+                              </>
+                            )}
+
+                          </div>
+                        )}
+
+                      </div>
+
+                      {/* Bottom actions container */}
+                      <div className="pt-4 border-t border-zinc-100 mt-auto">
+                        {status === 'APPROVED' && currentReq && (
+                          <button
+                            onClick={() => handleRevokeDoctorAccess(currentReq)}
+                            className="w-full py-2 rounded-xl border border-red-200 bg-red-50 hover:bg-red-100 text-red-700 text-xs font-mono font-bold transition-all shadow-sm cursor-pointer"
+                          >
+                            Revoke Secure Read Access
+                          </button>
+                        )}
+
+                        {status === 'PENDING' && currentReq && (
+                          <div className="flex gap-2">
+                            <button
+                              onClick={() => onUpdateRequestHandler(currentReq.id, 'REJECTED')}
+                              className="flex-1 py-2 rounded-xl border border-zinc-200 bg-white hover:bg-zinc-50 text-red-600 hover:text-red-700 text-xs font-mono font-bold transition-all shadow-sm cursor-pointer"
+                            >
+                              Decline
+                            </button>
+                            <button
+                              onClick={() => handleApproveAccessRequest(currentReq.id)}
+                              className="flex-1 py-2 rounded-xl bg-zinc-900 hover:bg-zinc-800 text-white font-bold text-xs font-mono tracking-wide transition-all shadow-sm cursor-pointer"
+                            >
+                              Approve & Sign
+                            </button>
+                          </div>
+                        )}
+                      </div>
+
+                    </div>
+                  );
+                })()}
+              </div>
+
+            </div>
+
+            {/* clinician Directory Registry Search Area */}
+            <div className="bg-white border border-zinc-200 rounded-3xl p-6 shadow-sm">
+              <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between pb-3 border-b border-zinc-150 mb-4 gap-3">
+                <div>
+                  <h4 className="font-display font-bold text-zinc-900 text-sm uppercase tracking-wide">Ledger Network Registry</h4>
+                  <p className="text-zinc-500 font-sans text-xs mt-0.5">Find available doctors and clinics registered on the Primacy medical ledger.</p>
+                </div>
+                <div className="relative max-w-xs w-full">
+                  <span className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                    <Search className="h-3.5 w-3.5 text-zinc-400" />
+                  </span>
+                  <input
+                    type="text"
+                    placeholder="Search doctor or specialty..."
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    className="w-full bg-zinc-50 border border-zinc-200 rounded-xl pl-9 pr-3 py-1.5 text-xs text-zinc-900 placeholder-zinc-400 focus:outline-none focus:border-zinc-300"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
+                {(() => {
+                  const doctors = allUsers.filter(u => u.role === 'DOCTOR');
+                  const filtered = doctors.filter(doc => {
+                    const q = searchQuery.toLowerCase();
+                    return doc.name.toLowerCase().includes(q) || 
+                           (doc.specialty && doc.specialty.toLowerCase().includes(q));
+                  });
+
+                  if (filtered.length === 0) {
+                    return (
+                      <div className="col-span-full text-center py-6 text-xs text-zinc-400 italic">
+                        No doctors matching '{searchQuery}' found on the network.
+                      </div>
+                    );
+                  }
+
+                  return filtered.map(doc => {
+                    const docRequests = filteredRequests.filter(req => req.doctorId === doc.id);
+                    const currentReq = docRequests.find(r => r.status === 'APPROVED') || 
+                                       docRequests.find(r => r.status === 'PENDING') ||
+                                       docRequests[0];
+                    const docStatus = currentReq ? currentReq.status : 'DISCONNECTED';
+
+                    return (
+                      <div key={doc.id} className="p-4 bg-zinc-50/50 border border-zinc-200 rounded-2xl flex items-center justify-between shadow-sm hover:border-zinc-250 hover:bg-white transition-all">
+                        <div>
+                          <div className="font-sans font-bold text-xs text-zinc-900">{doc.name}</div>
+                          <div className="font-mono text-[9px] text-zinc-400 mt-0.5">{doc.specialty || 'General Practitioner'}</div>
+                          
+                          <div className="mt-2.5">
+                            {docStatus === 'APPROVED' && (
+                              <span className="inline-flex items-center gap-1.5 px-2 py-0.5 text-[9px] font-mono bg-emerald-50 text-emerald-800 border border-emerald-150 rounded-full font-bold">
+                                <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" /> Secure Sync Active
+                              </span>
+                            )}
+                            {docStatus === 'PENDING' && (
+                              <span className="inline-flex items-center gap-1.5 px-2 py-0.5 text-[9px] font-mono bg-amber-50 text-amber-800 border border-amber-150 rounded-full font-bold">
+                                <span className="h-1.5 w-1.5 rounded-full bg-amber-500 animate-pulse" /> Pending Approval
+                              </span>
+                            )}
+                            {(docStatus === 'REVOKED' || docStatus === 'DISCONNECTED' || docStatus === 'REJECTED') && (
+                              <span className="inline-flex items-center gap-1.5 px-2 py-0.5 text-[9px] font-mono bg-zinc-100 text-zinc-450 border border-zinc-200 rounded-full">
+                                <span className="h-1.5 w-1.5 rounded-full bg-zinc-400" /> Disconnected
+                              </span>
+                            )}
+                          </div>
+                        </div>
+
+                        <div>
+                          {(docStatus === 'REVOKED' || docStatus === 'DISCONNECTED' || docStatus === 'REJECTED') ? (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setSelectedNodeId(doc.id);
+                                setPreAuthPurpose('Routine Consultation');
+                                setPreAuthPrivateKey(user.privateKey || '');
+                                setPreAuthError('');
+                                setPreAuthSuccess(false);
+                              }}
+                              className="px-3 py-1.5 rounded-xl bg-teal-800 hover:bg-teal-900 text-white font-bold font-mono text-[10px] shadow-sm transition-all cursor-pointer"
+                            >
+                              Connect
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setSelectedNodeId(doc.id);
+                              }}
+                              className="px-3 py-1.5 rounded-xl border border-zinc-200 bg-white hover:bg-zinc-50 text-zinc-600 font-mono text-[10px] shadow-sm transition-all cursor-pointer"
+                            >
+                              Inspect
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  });
+                })()}
               </div>
 
             </div>

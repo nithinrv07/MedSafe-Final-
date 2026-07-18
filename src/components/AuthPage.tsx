@@ -39,7 +39,7 @@ export default function AuthPage({
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
   const [generatedKeys, setGeneratedKeys] = useState<{ publicKey: string; privateKey: string } | null>(() => {
-    const saved = localStorage.getItem('medsafe_auth_generatedkeys');
+    const saved = sessionStorage.getItem('medsafe_auth_generatedkeys');
     return saved ? JSON.parse(saved) : null;
   });
   const [copiedKey, setCopiedKey] = useState<'PUBLIC' | 'PRIVATE' | null>(null);
@@ -69,6 +69,7 @@ export default function AuthPage({
     localStorage.removeItem('medsafe_auth_otptimer');
     localStorage.removeItem('medsafe_auth_simulatedotp');
     localStorage.removeItem('medsafe_auth_generatedkeys');
+    sessionStorage.removeItem('medsafe_auth_generatedkeys');
   };
 
   // Sync state values with localStorage
@@ -114,9 +115,9 @@ export default function AuthPage({
 
   React.useEffect(() => {
     if (generatedKeys) {
-      localStorage.setItem('medsafe_auth_generatedkeys', JSON.stringify(generatedKeys));
+      sessionStorage.setItem('medsafe_auth_generatedkeys', JSON.stringify(generatedKeys));
     } else {
-      localStorage.removeItem('medsafe_auth_generatedkeys');
+      sessionStorage.removeItem('medsafe_auth_generatedkeys');
     }
   }, [generatedKeys]);
 
