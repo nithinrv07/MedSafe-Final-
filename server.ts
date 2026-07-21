@@ -7,6 +7,8 @@ import dotenv from "dotenv";
 import nodemailer from "nodemailer";
 import dns from "dns";
 import { GoogleGenAI } from "@google/genai";
+import { initializeApp } from "firebase/app";
+import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword } from "firebase/auth";
 
 dotenv.config();
 
@@ -145,10 +147,58 @@ function seedDatabase() {
 
 const DB_URL = process.env.FIREBASE_DATABASE_URL;
 
+const firebaseConfig = {
+  apiKey: "AIzaSyDGmZOGdm7vUNRIUqjIu6sVtdT-PZj1j6s",
+  authDomain: "medsafe-e1d89.firebaseapp.com",
+  projectId: "medsafe-e1d89",
+  storageBucket: "medsafe-e1d89.firebasestorage.app",
+  messagingSenderId: "875344895809",
+  appId: "1:875344895809:web:b203f874ca20b4f2ab0bc0",
+  measurementId: "G-88RRTZ9QH2"
+};
+
+const firebaseApp = initializeApp(firebaseConfig);
+const firebaseAuth = getAuth(firebaseApp);
+
+const BACKEND_EMAIL = "backend-service@medsafe-e1d89.firebaseapp.com";
+const BACKEND_PASSWORD = process.env.BACKEND_PASSWORD || "MedSafeSecureBackendPass123!";
+
+async function getDbAuthToken(): Promise<string> {
+  if (!DB_URL) return "";
+  
+  if (firebaseAuth.currentUser) {
+    try {
+      return await firebaseAuth.currentUser.getIdToken(false);
+    } catch (e) {
+      console.warn("[FIREBASE] Backend token refresh failed, attempting re-login...", e);
+    }
+  }
+
+  try {
+    const userCredential = await signInWithEmailAndPassword(firebaseAuth, BACKEND_EMAIL, BACKEND_PASSWORD);
+    return await userCredential.user.getIdToken();
+  } catch (error: any) {
+    if (error.code === "auth/user-not-found" || error.code === "auth/invalid-credential") {
+      try {
+        console.log("[FIREBASE] Backend service account not found. Registering new backend service user...");
+        const userCredential = await createUserWithEmailAndPassword(firebaseAuth, BACKEND_EMAIL, BACKEND_PASSWORD);
+        return await userCredential.user.getIdToken();
+      } catch (regError) {
+        console.error("[FIREBASE] Failed to register backend service account:", regError);
+      }
+    } else {
+      console.error("[FIREBASE] Failed to sign in backend service account:", error);
+    }
+  }
+  return "";
+}
+
 async function saveToFirebase() {
   if (!DB_URL) return;
   try {
-    const res = await fetch(`${DB_URL}/.json`, {
+    const token = await getDbAuthToken();
+    const url = token ? `${DB_URL}/.json?auth=${token}` : `${DB_URL}/.json`;
+    const res = await fetch(url, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ users, records, requests, logs })
@@ -168,7 +218,9 @@ async function loadFromFirebase() {
     return;
   }
   try {
-    const res = await fetch(`${DB_URL}/.json`);
+    const token = await getDbAuthToken();
+    const url = token ? `${DB_URL}/.json?auth=${token}` : `${DB_URL}/.json`;
+    const res = await fetch(url);
     if (!res.ok) {
       throw new Error(`Failed to fetch state: ${res.statusText}`);
     }

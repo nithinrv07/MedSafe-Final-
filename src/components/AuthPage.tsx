@@ -58,6 +58,7 @@ export default function AuthPage({
   const [showPassword, setShowPassword] = useState(false);
 
   // Clean up helper
+  // Clean up helper
   const clearAuthPersistence = () => {
     localStorage.removeItem('medsafe_auth_form_mode');
     localStorage.removeItem('medsafe_auth_role');
@@ -187,30 +188,54 @@ export default function AuthPage({
       }
     }
 
-    // Look for user in our ledger profiles list
-    const user = existingUsers.find(
-      u => u.email.toLowerCase() === email.toLowerCase() && u.role === role
+    // Look for user in our ledger profiles list by email alone
+    let user = existingUsers.find(
+      u => u.email.toLowerCase() === email.toLowerCase()
     );
+
+    if (!user) {
+      // Check fallbacks for default accounts
+      if (email.toLowerCase() === 'eleanor@vance.io') {
+        user = existingUsers.find(u => u.email === 'eleanor@vance.io');
+      } else if (email.toLowerCase() === 'chen@metrocardio.org') {
+        user = existingUsers.find(u => u.email === 'chen@metrocardio.org');
+      } else if (email.toLowerCase() === 'lin@neurohealth.com') {
+        user = existingUsers.find(u => u.email === 'lin@neurohealth.com');
+      }
+    }
 
     if (user) {
       await triggerOtpFlow(user, 'LOGIN');
     } else {
-      // Provide friendly advice with default accounts
-      if (email.toLowerCase() === 'eleanor@vance.io') {
-        const matched = existingUsers.find(u => u.email === 'eleanor@vance.io');
-        if (matched) { await triggerOtpFlow(matched, 'LOGIN'); return; }
-      } else if (email.toLowerCase() === 'chen@metrocardio.org') {
-        const matched = existingUsers.find(u => u.email === 'chen@metrocardio.org');
-        if (matched) { await triggerOtpFlow(matched, 'LOGIN'); return; }
-      } else if (email.toLowerCase() === 'lin@neurohealth.com') {
-        const matched = existingUsers.find(u => u.email === 'lin@neurohealth.com');
-        if (matched) { await triggerOtpFlow(matched, 'LOGIN'); return; }
-      }
-      setIsLoading(false);
       if (isDemo) {
+        setIsLoading(false);
         setErrorMessage(`Demo account metadata was not found. Please re-seed the database.`);
       } else {
-        setErrorMessage(`Authenticated successfully via Firebase, but no local ledger profile was found for ${email} as a ${role === 'PATIENT' ? 'Patient' : 'Licensed Doctor'}.`);
+        // Automatically reconstruct/generate the ledger profile and keys on successful login!
+        try {
+          const namePrefix = email.split('@')[0];
+          const displayName = namePrefix.charAt(0).toUpperCase() + namePrefix.slice(1);
+          const keys = generateKeyPair(displayName);
+          
+          const emailPrefix = email.split('@')[0].toLowerCase().replace(/[^a-z0-9]/g, '');
+          const autoUser: UserProfile = {
+            id: `user-${emailPrefix}`,
+            email,
+            name: displayName,
+            role,
+            publicKey: keys.publicKey,
+            privateKey: keys.privateKey,
+            createdAt: new Date().toISOString(),
+            passcode: password,
+            ...(role === 'DOCTOR' ? { licenceNumber: `LIC-${Math.floor(10000 + Math.random() * 90000)}-AUTO`, specialty: 'General Practice' } : {})
+          };
+
+          onRegisterUser(autoUser);
+          await triggerOtpFlow(autoUser, 'LOGIN');
+        } catch (genErr: any) {
+          setIsLoading(false);
+          setErrorMessage(genErr.message || "Failed to dynamically reconstruct ledger profile keys.");
+        }
       }
     }
   };
@@ -226,13 +251,6 @@ export default function AuthPage({
 
     if (role === 'DOCTOR' && !licenseNumber) {
       setErrorMessage('Medical registration or state license number is required for Clinician role verification.');
-      return;
-    }
-
-    // Check if user already exists
-    const exists = existingUsers.some(u => u.email.toLowerCase() === email.toLowerCase());
-    if (exists) {
-      setErrorMessage('This email is already registered on our Network.');
       return;
     }
 
@@ -263,7 +281,7 @@ export default function AuthPage({
 
       if (otpMode === 'LOGIN_VERIFY') {
         const user = existingUsers.find(
-          u => u.email.toLowerCase() === email.toLowerCase() && u.role === role
+          u => u.email.toLowerCase() === email.toLowerCase()
         );
         if (user) {
           clearAuthPersistence();
@@ -351,8 +369,9 @@ export default function AuthPage({
     try {
       await createUserWithEmailAndPassword(auth, email, password);
 
+      const emailPrefix = email.split('@')[0].toLowerCase().replace(/[^a-z0-9]/g, '');
       const newUser: UserProfile = {
-        id: `user-${Math.random().toString(36).substring(2, 9)}`,
+        id: `user-${emailPrefix}`,
         email,
         name,
         role,
@@ -369,7 +388,7 @@ export default function AuthPage({
     } catch (err: any) {
       let msg = err.message || "Failed to register user to Firebase Authentication.";
       if (err.code === 'auth/email-already-in-use') {
-        msg = "This email is already registered on our system.";
+        msg = "This email is already registered in our Authentication system.";
       } else if (err.code === 'auth/invalid-email') {
         msg = "The email address is invalid.";
       } else if (err.code === 'auth/weak-password') {
@@ -763,11 +782,8 @@ export default function AuthPage({
                   </span>
                 )}
               </div>
-
-
             </div>
           )}
-
         </div>
 
       </div>
