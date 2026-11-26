@@ -98,7 +98,17 @@ sequenceDiagram
 │   ├── utils/
 │   │   ├── vaultCrypto.ts    # RSA-OAEP / RSA-PSS / AES-GCM / PBKDF2 (browser + Node)
 │   │   └── drugInteractions.ts
-│   └── components/           # Landing, Auth, Patient & Doctor dashboards, QR scanner, ...
+│   └── components/
+│       ├── PatientDashboard.tsx   # Patient shell: sidebar + active tab
+│       ├── patient/               # RecordsTab, RecordCard, AddRecordForm, AccessRequestsTab,
+│       │                          # SignConsentPanel, KeyCardTab, IdentityCard, QrPassCard,
+│       │                          # PasscodeModal, NodeMapTab, NodeMapCanvas, NodeDetailPanel,
+│       │                          # DoctorDirectory, AuditLogTab, PatientSidebar
+│       ├── DoctorDashboard.tsx    # Doctor shell: sidebar + active tab
+│       ├── doctor/                # PatientSearchTab, ApprovedVaultsTab, GrantCard,
+│       │                          # DoctorRecordItem, PrescribeForm, DoctorLogsTab, DoctorSidebar
+│       ├── shared/PhotoLightbox.tsx
+│       └── AuthPage, LandingPage, QRScanner, EncryptionVisualizer, Logo
 ├── tests/                    # Vitest suites
 ├── database.rules.json       # Firebase RTDB rules template (backend account only)
 └── .env.example
