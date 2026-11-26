@@ -61,7 +61,7 @@ export default function EncryptionVisualizer({
           {animationStep === 'SECURED' && <ShieldCheck className="h-5 w-5 text-teal-600" />}
           <span className="font-display font-bold text-zinc-800 text-xs md:text-sm tracking-wide uppercase">
             {animationStep === 'READING' && 'Reading Private Ledger Plaintext'}
-            {animationStep === 'CRYPTING' && 'Zero-Knowledge Asymmetric Encryption...'}
+            {animationStep === 'CRYPTING' && 'AES-256-GCM encryption in your browser...'}
             {animationStep === 'SECURED' && 'Asymmetric Encrypted Vault Active'}
           </span>
         </div>

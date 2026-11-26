@@ -1,7 +1,9 @@
 import React, { useState } from 'react';
 import { Shield, Key, FileText, Lock, Plus, Check, X, LogOut, Radio, HelpCircle, Eye, EyeOff, AlertTriangle, AlertCircle, Copy, Database, Sparkles, RefreshCcw, UploadCloud, Image, Camera, Paperclip, Search, ZoomIn, Loader2, Network } from 'lucide-react';
 import { UserProfile, MedicalRecord, AccessRequest, AuditLog } from '../types';
-import { encryptRecord, decryptRecord, generateHash, signRequest, checkDrugInteractions } from '../utils/cryptoSim';
+import { checkDrugInteractions } from '../utils/drugInteractions';
+import { encryptRecordPayload, unwrapPrivateKey } from '../utils/vaultCrypto';
+import QRCode from 'qrcode';
 import EncryptionVisualizer from './EncryptionVisualizer';
 import Logo from './Logo';
 
@@ -45,18 +47,16 @@ export default function PatientDashboard({
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
 
   const handlePreAuthorizeDoctor = (doc: UserProfile) => {
-    if (!preAuthPrivateKey || !preAuthPrivateKey.includes('RSA PRIVATE KEY')) {
-      setPreAuthError('Invalid signature credential. Your full PEM private key is required to build digital signature.');
+    if (!user.privateKey) {
+      setPreAuthError('Unlock your vault with your passcode first.');
+      return;
+    }
+    if (preAuthPrivateKey.trim() !== user.privateKey.trim()) {
+      setPreAuthError('This private key does not match your account.');
       return;
     }
 
-    if (preAuthPrivateKey !== user.privateKey) {
-      setPreAuthError('Validation Failure: Signature key mismatch.');
-      return;
-    }
-
-    const newReqId = `req-${Math.random().toString(36).substring(2, 9)}`;
-    const signature = signRequest(newReqId, preAuthPrivateKey);
+    const newReqId = `req-${crypto.randomUUID()}`;
     const newRequest: AccessRequest = {
       id: newReqId,
       patientId: user.id,
@@ -68,15 +68,10 @@ export default function PatientDashboard({
       status: 'APPROVED',
       requestedAt: new Date().toISOString(),
       decidedAt: new Date().toISOString(),
-      digitalSignature: signature
     };
 
+    // The signature (RSA-PSS) and the doctor's record keys are created in App before sending.
     onSubmitRequest(newRequest);
-    onAddLog(
-      'Pre-Authorized Clinician Connection',
-      'SUCCESS',
-      `Patient Eleanor Vance pre-authorized secure ledger read token to ${doc.name} for purpose: "${preAuthPurpose}".`
-    );
 
     setPreAuthSuccess(true);
     setPreAuthError('');
@@ -122,6 +117,20 @@ export default function PatientDashboard({
   const [privateKeyConfirmInput, setPrivateKeyConfirmInput] = useState(user.privateKey || '');
   const [privateKeyError, setPrivateKeyError] = useState('');
 
+  // QR pass is generated locally; the patient id is never sent to a third-party QR service.
+  const [qrDataUrl, setQrDataUrl] = useState('');
+  React.useEffect(() => {
+    QRCode.toDataURL(user.id, { width: 260, margin: 1 }).then(setQrDataUrl).catch(() => setQrDataUrl(''));
+  }, [user.id]);
+
+  // The vault may be unlocked after this component mounts; prefill the key fields then.
+  React.useEffect(() => {
+    if (user.privateKey) {
+      setPreAuthPrivateKey(k => k || user.privateKey!);
+      setPrivateKeyConfirmInput(k => k || user.privateKey!);
+    }
+  }, [user.privateKey]);
+
   // Key card toggles
   const [showPrivateKey, setShowPrivateKey] = useState(false);
   const [copiedText, setCopiedText] = useState<'PUBLIC' | 'PRIVATE' | null>(null);
@@ -143,10 +152,16 @@ export default function PatientDashboard({
     }
   };
 
-  const handleVerifyPasscode = (e: React.FormEvent) => {
+  const handleVerifyPasscode = async (e: React.FormEvent) => {
     e.preventDefault();
-    const correctPasscode = user.passcode || 'password'; // Default demo passcode fallback
-    if (passcodeAttempt === correctPasscode) {
+    // Real check: the passcode must decrypt the stored, encrypted private key.
+    let ok = false;
+    try {
+      ok = !!user.encryptedPrivateKey && (await unwrapPrivateKey(user.encryptedPrivateKey, passcodeAttempt)) === user.privateKey;
+    } catch {
+      ok = false;
+    }
+    if (ok) {
       setShowPrivateKey(true);
       setIsPasscodeModalOpen(false);
       setShowPasscode(false);
@@ -218,7 +233,7 @@ export default function PatientDashboard({
             onAddLog(
               'AI OCR Analysis Complete',
               'SUCCESS',
-              `Automatically extracted document details via ${data.simulated ? 'clinical simulator template' : 'Gemini 2.0 AI'} and auto-populated vault form fields.`
+              `Automatically extracted document details via ${data.simulated ? 'the offline sample template' : 'Gemini AI'} and auto-populated vault form fields.`
             );
           }
         } catch (err) {
@@ -232,7 +247,7 @@ export default function PatientDashboard({
   };
 
   // Trigger Local Asymmetric Record Encryption
-  const handleCreateRecordSubmit = (e: React.FormEvent) => {
+  const handleCreateRecordSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newTitle || !newDetails) return;
 
@@ -240,27 +255,37 @@ export default function PatientDashboard({
       ? newDrugs.split(',').map(m => m.trim()).filter(Boolean)
       : [];
 
-    const simulatedEncrypted = encryptRecord(newDetails, user.publicKey);
-    const simulatedHash = generateHash(newDetails);
+    // Real AES-256-GCM output of this content, shown in the visualizer.
+    // The record itself is encrypted again for all readers when it is saved.
+    const preview = await encryptRecordPayload(
+      { title: newTitle, details: newDetails, medicines: finalMedicinesList, photoUrls: [] },
+      { [user.id]: user.publicKey }
+    );
 
     // Trigger visualizer
     setVisualData({
       plain: newDetails,
-      cipher: simulatedEncrypted,
+      cipher: `AES-256-GCM | iv=${preview.iv} | ${preview.ciphertext}`,
       active: true,
     });
 
     // Save record to local state
     const createdRecord: MedicalRecord = {
-      id: `rec-${Math.random().toString(36).substring(2, 9)}`,
+      id: `rec-${crypto.randomUUID()}`,
       patientId: user.id,
+      authorId: user.id,
+      createdAt: new Date().toISOString(),
+      ciphertext: '',
+      iv: '',
+      keyEnvelopes: {},
+      readers: [],
       title: newTitle,
       category: newCategory,
       doctorName: newDoctorName || 'Self Uploaded',
       date: new Date().toISOString().split('T')[0],
       details: newDetails,
-      encryptedContent: simulatedEncrypted,
-      hash: simulatedHash,
+      encryptedContent: '',
+      hash: '',
       medicines: finalMedicinesList,
       photoUrl: newPhotoUrls[0] || undefined,
       photoUrls: newPhotoUrls,
@@ -268,11 +293,6 @@ export default function PatientDashboard({
 
     setTimeout(() => {
       onAddRecord(createdRecord);
-      onAddLog(
-        'Record Vault Appended',
-        'SUCCESS',
-        `Authorized new ${newCategory}: "${newTitle}" encrypted via personal primacy key pair.`
-      );
       // Reset
       setNewTitle('');
       setNewDoctorName('');
@@ -294,23 +314,17 @@ export default function PatientDashboard({
   const handleSignConfirm = () => {
     if (!signingRequestId) return;
 
-    if (!privateKeyConfirmInput || !privateKeyConfirmInput.includes('RSA PRIVATE KEY')) {
-      setPrivateKeyError('Invalid signature credential. To construct digital signature, your full PEM private key is required.');
+    if (!user.privateKey) {
+      setPrivateKeyError('Unlock your vault with your passcode first.');
+      return;
+    }
+    if (privateKeyConfirmInput.trim() !== user.privateKey.trim()) {
+      setPrivateKeyError('This private key does not match your account.');
       return;
     }
 
-    // Generate SHA-256 RSA Signature
-    const simulatedSignature = signRequest(signingRequestId, privateKeyConfirmInput);
-    const targetRequest = requests.find(req => req.id === signingRequestId);
-
-    if (targetRequest) {
-      onUpdateRequestHandler(signingRequestId, 'APPROVED', simulatedSignature);
-      onAddLog(
-        'Access Consent Signed',
-        'SUCCESS',
-        `Digital signature validated. Granted decrypted medical read token key metadata to ${targetRequest.doctorName}.`
-      );
-    }
+    // App signs the decision with RSA-PSS and re-wraps your record keys for the doctor.
+    onUpdateRequestHandler(signingRequestId, 'APPROVED');
 
     setSigningRequestId(null);
   };
@@ -318,11 +332,6 @@ export default function PatientDashboard({
   // Revoke Doctor's Read Access instantly (Zero-Knowledge revoking)
   const handleRevokeDoctorAccess = (req: AccessRequest) => {
     onUpdateRequestHandler(req.id, 'REVOKED');
-    onAddLog(
-      'Doctor Access Revoked',
-      'ALERT',
-      `Primacy user Eleanor Vance revoked medical decrypted read token key from ${req.doctorName}.`
-    );
   };
 
   const handleDecryptSelfRecord = (rec: MedicalRecord, passedKey?: string) => {
@@ -335,16 +344,18 @@ export default function PatientDashboard({
       return;
     }
 
-    if (finalKey !== user.privateKey) {
+    if (!user.privateKey || finalKey !== user.privateKey.trim()) {
       setDecryptionError({
         ...decryptionError,
-        [rec.id]: 'Validation Failure: Decryption key mismatch.'
+        [rec.id]: 'This private key does not match your account.'
       });
       return;
     }
 
     try {
-      const decodedPlain = decryptRecord(rec.encryptedContent, finalKey);
+      // Records are decrypted with AES-GCM in App as soon as the vault is unlocked.
+      if (rec.locked) throw new Error('This record could not be decrypted with your key.');
+      const decodedPlain = rec.details;
       setDecryptedRecordIds({
         ...decryptedRecordIds,
         [rec.id]: decodedPlain,
@@ -355,11 +366,6 @@ export default function PatientDashboard({
       delete errs[rec.id];
       setDecryptionError(errs);
 
-      onAddLog(
-        'Self Record Decrypted',
-        'SUCCESS',
-        `Patient Eleanor Vance decrypted own record "${rec.title}" with valid personal primacy credential key.`
-      );
     } catch (err: any) {
       setDecryptionError({
         ...decryptionError,
@@ -380,8 +386,6 @@ export default function PatientDashboard({
   const handleUpdateRecordSubmit = (rec: MedicalRecord) => {
     if (!editingTitle || !editingDetails) return;
 
-    const updatedEncrypted = encryptRecord(editingDetails, user.publicKey);
-    const updatedHash = generateHash(editingDetails);
     const updatedMedicines = editingDrugs
       ? editingDrugs.split(',').map(m => m.trim()).filter(Boolean)
       : [];
@@ -392,8 +396,6 @@ export default function PatientDashboard({
       category: editingCategory,
       doctorName: editingDoctorName || 'Self Uploaded',
       details: editingDetails,
-      encryptedContent: updatedEncrypted,
-      hash: updatedHash,
       medicines: updatedMedicines,
     };
 
@@ -404,11 +406,6 @@ export default function PatientDashboard({
 
     onUpdateRecord(updatedRecord);
 
-    onAddLog(
-      'Record Vault Updated',
-      'SUCCESS',
-      `Patient Eleanor Vance updated and re-encrypted record "${editingTitle}" on the zero-knowledge ledger.`
-    );
 
     setEditingRecordId(null);
   };
@@ -1018,7 +1015,7 @@ export default function PatientDashboard({
                                       onClick={() => setRecordKeyInputs({ ...recordKeyInputs, [rec.id]: user.privateKey || '' })}
                                       className="py-1 px-1.5 border border-zinc-200 hover:border-zinc-300 rounded text-[8px] font-mono font-bold text-zinc-650 hover:text-zinc-800 bg-white hover:bg-zinc-50 cursor-pointer"
                                     >
-                                      Demo Key Auto-fill
+                                      Auto-fill my key
                                     </button>
                                     <div className="flex gap-1.5">
                                       <button
@@ -1097,14 +1094,14 @@ export default function PatientDashboard({
 
                 <div className="space-y-2">
                   <label className="block text-[10px] font-mono text-zinc-500 uppercase font-semibold">
-                    Your PEM RSA Private Key (Auto-filled for ease of sandbox evaluation)
+                    Your private key (PEM), unlocked in this browser
                   </label>
                   <textarea
                     rows={4}
                     value={privateKeyConfirmInput}
                     onChange={(e) => setPrivateKeyConfirmInput(e.target.value)}
                     className="w-full bg-zinc-50 border border-zinc-200 rounded-xl p-3 text-[10px] text-zinc-950 font-mono focus:outline-none focus:border-zinc-400 transition-all hover:bg-white"
-                    placeholder="-----BEGIN RSA PRIVATE KEY-----"
+                    placeholder="-----BEGIN PRIVATE KEY-----"
                   />
                 </div>
 
@@ -1398,7 +1395,7 @@ export default function PatientDashboard({
                   <div className="flex flex-col items-center justify-center py-2">
                     <div className="p-3 bg-white rounded-2xl border border-blue-200/60 shadow-sm flex items-center justify-center hover:scale-105 transition-all duration-300">
                       <img 
-                        src={`https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${user.id}`}
+                        src={qrDataUrl}
                         alt="Primacy Patient QR Code ID"
                         referrerPolicy="no-referrer"
                         className="w-[130px] h-[130px]"
@@ -1836,7 +1833,7 @@ export default function PatientDashboard({
                         <div className="space-y-3.5 text-xs">
                           <div>
                             <span className="text-[9px] font-mono text-zinc-400 block uppercase font-bold">Secure ID Hash</span>
-                            <span className="font-mono text-[9px] text-zinc-800 break-all select-all font-semibold bg-zinc-50 px-2 py-1.5 rounded border border-zinc-200 block mt-1">{generateHash(user.id)}</span>
+                            <span className="font-mono text-[9px] text-zinc-800 break-all select-all font-semibold bg-zinc-50 px-2 py-1.5 rounded border border-zinc-200 block mt-1">{user.keyFingerprint}</span>
                           </div>
 
                           <div>
@@ -1960,7 +1957,7 @@ export default function PatientDashboard({
                                   rows={3}
                                   value={preAuthPrivateKey}
                                   onChange={(e) => setPreAuthPrivateKey(e.target.value)}
-                                  placeholder="-----BEGIN RSA PRIVATE KEY-----"
+                                  placeholder="-----BEGIN PRIVATE KEY-----"
                                   className="w-full bg-zinc-50 border border-zinc-200 rounded-lg p-1.5 text-[9px] font-mono focus:outline-none focus:border-zinc-300"
                                 />
                                 <button
@@ -2282,11 +2279,6 @@ export default function PatientDashboard({
                 </div>
               </div>
 
-              {!user.passcode && (
-                <div className="p-2.5 rounded-xl bg-amber-50/50 border border-amber-200/50 text-[9px] font-sans text-amber-800 leading-normal">
-                  💡 <strong>Demo Profile Tip:</strong> Since you did not register this session, use the default testing passcode: <span className="font-mono bg-amber-100/50 px-1 py-0.5 rounded text-amber-905 select-all font-bold">password</span>
-                </div>
-              )}
 
               <div className="flex gap-2.5 pt-2">
                 <button
