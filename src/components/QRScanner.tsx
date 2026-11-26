@@ -200,7 +200,8 @@ export default function QRScanner({ allUsers, onScanSuccess, onClose }: QRScanne
     const found = patientsList.find(p => {
       const pId = p.id.toLowerCase();
       const pEmail = p.email.toLowerCase();
-      return pId === cleanLower || pEmail === cleanLower || cleanLower.includes(pId) || pId.includes(cleanLower);
+      // Exact matches only: a partial match could select the wrong patient.
+      return pId === cleanLower || pEmail === cleanLower || cleanLower === `medsafe:patient:${pId}`;
     });
 
     if (found) {
@@ -358,7 +359,7 @@ export default function QRScanner({ allUsers, onScanSuccess, onClose }: QRScanne
                 <span className="font-bold flex items-center gap-1.5 mb-1 text-indigo-900">
                   <Sparkles className="h-4 w-4 text-indigo-600" /> Interactive Simulation Station
                 </span>
-                No webcam or custom printout folder ready? Simulate scanning high-contrast physical dossier codes. This uses authentic ledger processing.
+                No webcam or custom printout folder ready? Simulate scanning high-contrast physical dossier codes. Pick a patient to simulate scanning their QR pass.
               </div>
 
               <div className="space-y-2.5">

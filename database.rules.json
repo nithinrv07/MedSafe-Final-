@@ -1,0 +1,6 @@
+{
+  "rules": {
+    ".read": "auth != null && auth.token.email == 'REPLACE_WITH_BACKEND_EMAIL'",
+    ".write": "auth != null && auth.token.email == 'REPLACE_WITH_BACKEND_EMAIL'"
+  }
+}

@@ -1,82 +1,53 @@
 import React, { useState } from 'react';
 import { Shield, Key, Mail, Lock, User, Eye, EyeOff, Loader2, Award, ClipboardList, ShieldCheck, ArrowLeft, Download, Copy, Check } from 'lucide-react';
 import { UserRole, UserProfile } from '../types';
-import { generateKeyPair } from '../utils/cryptoSim';
-import { auth } from '../firebase';
-import { signInWithEmailAndPassword, createUserWithEmailAndPassword } from 'firebase/auth';
+import { deriveAuthKey, generateUserKeys, unwrapPrivateKey, wrapPrivateKey } from '../utils/vaultCrypto';
+import { api } from '../api';
 import Logo from './Logo';
 
 interface AuthPageProps {
   onBack: () => void;
+  /** Called with the signed-in user; `privateKey` is set (unlocked in this browser). */
   onAuthSuccess: (user: UserProfile) => void;
-  existingUsers: UserProfile[];
-  onRegisterUser: (newUser: UserProfile) => void;
   initialMode?: 'LOGIN' | 'REGISTER';
 }
+
+const MIN_PASSCODE_LENGTH = 8;
 
 export default function AuthPage({
   onBack,
   onAuthSuccess,
-  existingUsers,
-  onRegisterUser,
   initialMode = 'LOGIN'
 }: AuthPageProps) {
-  const [mode, setMode] = useState<'LOGIN' | 'REGISTER'>(() => {
-    return (localStorage.getItem('medsafe_auth_form_mode') as any) || initialMode;
-  });
+  const [mode, setMode] = useState<'LOGIN' | 'REGISTER'>(initialMode);
   const [role, setRole] = useState<UserRole>(() => {
     return (localStorage.getItem('medsafe_auth_role') as any) || 'PATIENT';
   });
-  
-  // Form values
+
+  // Form values. The passcode is only ever held in memory.
   const [email, setEmail] = useState(() => localStorage.getItem('medsafe_auth_email') || '');
-  const [password, setPassword] = useState(''); // Keep empty for security
-  const [name, setName] = useState(() => localStorage.getItem('medsafe_auth_name') || '');
-  const [licenseNumber, setLicenseNumber] = useState(() => localStorage.getItem('medsafe_auth_license') || '');
-  const [specialty, setSpecialty] = useState(() => localStorage.getItem('medsafe_auth_specialty') || 'General Practice');
+  const [password, setPassword] = useState('');
+  const [name, setName] = useState('');
+  const [licenseNumber, setLicenseNumber] = useState('');
+  const [specialty, setSpecialty] = useState('General & Family Practice');
 
   // Interactive UI states
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
-  const [generatedKeys, setGeneratedKeys] = useState<{ publicKey: string; privateKey: string } | null>(() => {
-    const saved = sessionStorage.getItem('medsafe_auth_generatedkeys');
-    return saved ? JSON.parse(saved) : null;
-  });
+  // Keys generated during registration, shown once on the key card screen. Memory only.
+  const [generatedKeys, setGeneratedKeys] = useState<{ publicKey: string; privateKey: string } | null>(null);
+  const [registeredUser, setRegisteredUser] = useState<UserProfile | null>(null);
   const [copiedKey, setCopiedKey] = useState<'PUBLIC' | 'PRIVATE' | null>(null);
 
   // OTP related states
-  const [otpMode, setOtpMode] = useState<'NONE' | 'LOGIN_VERIFY' | 'REGISTER_VERIFY'>(() => {
-    return (localStorage.getItem('medsafe_auth_otpmode') as any) || 'NONE';
-  });
+  const [otpMode, setOtpMode] = useState<'NONE' | 'LOGIN_VERIFY' | 'REGISTER_VERIFY'>('NONE');
+  const [challengeId, setChallengeId] = useState<string | null>(null);
   const [otpCode, setOtpCode] = useState<string[]>(Array(6).fill(''));
-  const [otpTimer, setOtpTimer] = useState<number>(() => {
-    const saved = localStorage.getItem('medsafe_auth_otptimer');
-    return saved ? parseInt(saved, 10) : 0;
-  });
-  const [simulatedOtp, setSimulatedOtp] = useState<string | null>(() => localStorage.getItem('medsafe_auth_simulatedotp'));
+  const [otpTimer, setOtpTimer] = useState<number>(0);
+  // Only set when the server runs in local development with OTP_DEV_ECHO=true.
+  const [simulatedOtp, setSimulatedOtp] = useState<string | null>(null);
   const [isVerifyingOtp, setIsVerifyingOtp] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
-
-  // Clean up helper
-  // Clean up helper
-  const clearAuthPersistence = () => {
-    localStorage.removeItem('medsafe_auth_form_mode');
-    localStorage.removeItem('medsafe_auth_role');
-    localStorage.removeItem('medsafe_auth_email');
-    localStorage.removeItem('medsafe_auth_name');
-    localStorage.removeItem('medsafe_auth_license');
-    localStorage.removeItem('medsafe_auth_specialty');
-    localStorage.removeItem('medsafe_auth_otpmode');
-    localStorage.removeItem('medsafe_auth_otptimer');
-    localStorage.removeItem('medsafe_auth_simulatedotp');
-    localStorage.removeItem('medsafe_auth_generatedkeys');
-    sessionStorage.removeItem('medsafe_auth_generatedkeys');
-  };
-
-  // Sync state values with localStorage
-  React.useEffect(() => {
-    localStorage.setItem('medsafe_auth_form_mode', mode);
-  }, [mode]);
 
   React.useEffect(() => {
     localStorage.setItem('medsafe_auth_role', role);
@@ -85,42 +56,6 @@ export default function AuthPage({
   React.useEffect(() => {
     localStorage.setItem('medsafe_auth_email', email);
   }, [email]);
-
-  React.useEffect(() => {
-    localStorage.setItem('medsafe_auth_name', name);
-  }, [name]);
-
-  React.useEffect(() => {
-    localStorage.setItem('medsafe_auth_license', licenseNumber);
-  }, [licenseNumber]);
-
-  React.useEffect(() => {
-    localStorage.setItem('medsafe_auth_specialty', specialty);
-  }, [specialty]);
-
-  React.useEffect(() => {
-    localStorage.setItem('medsafe_auth_otpmode', otpMode);
-  }, [otpMode]);
-
-  React.useEffect(() => {
-    localStorage.setItem('medsafe_auth_otptimer', otpTimer.toString());
-  }, [otpTimer]);
-
-  React.useEffect(() => {
-    if (simulatedOtp) {
-      localStorage.setItem('medsafe_auth_simulatedotp', simulatedOtp);
-    } else {
-      localStorage.removeItem('medsafe_auth_simulatedotp');
-    }
-  }, [simulatedOtp]);
-
-  React.useEffect(() => {
-    if (generatedKeys) {
-      sessionStorage.setItem('medsafe_auth_generatedkeys', JSON.stringify(generatedKeys));
-    } else {
-      sessionStorage.removeItem('medsafe_auth_generatedkeys');
-    }
-  }, [generatedKeys]);
 
   // Countdown timer effect
   React.useEffect(() => {
@@ -133,134 +68,89 @@ export default function AuthPage({
     return () => clearInterval(interval);
   }, [otpTimer]);
 
-  const triggerOtpFlow = async (user: UserProfile | null, targetMode: 'LOGIN' | 'REGISTER') => {
-    setErrorMessage('');
-    setIsLoading(true);
-    try {
-      const response = await fetch('/api/otp/send', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email }),
-      });
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data.error || 'Failed to send OTP code.');
-      }
-      
-      setOtpMode(targetMode === 'LOGIN' ? 'LOGIN_VERIFY' : 'REGISTER_VERIFY');
-      setOtpCode(Array(6).fill(''));
-      setOtpTimer(60);
-      
-      if (data.simulated && data.otp) {
-        setSimulatedOtp(data.otp);
-      } else {
-        setSimulatedOtp(null);
-      }
-    } catch (err: any) {
-      setErrorMessage(err.message || 'Error occurred while sending OTP code.');
-    } finally {
-      setIsLoading(false);
-    }
+  const startOtpStep = (data: { challengeId: string; devOtp?: string }, target: 'LOGIN_VERIFY' | 'REGISTER_VERIFY') => {
+    setChallengeId(data.challengeId);
+    setSimulatedOtp(data.devOtp ?? null);
+    setOtpMode(target);
+    setOtpCode(Array(6).fill(''));
+    setOtpTimer(30);
   };
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMessage('');
     setIsLoading(true);
-
-    const isDemo = ['eleanor@vance.io', 'chen@metrocardio.org', 'lin@neurohealth.com'].includes(email.toLowerCase());
-
-    if (!isDemo) {
-      try {
-        await signInWithEmailAndPassword(auth, email, password);
-      } catch (err: any) {
-        setIsLoading(false);
-        let msg = err.message || "Failed to authenticate with Firebase.";
-        if (err.code === 'auth/invalid-credential') {
-          msg = "Invalid password or email address. Authentication rejected.";
-        } else if (err.code === 'auth/user-not-found') {
-          msg = "No user found matching this email address on the ledger network.";
-        } else if (err.code === 'auth/wrong-password') {
-          msg = "Incorrect security passcode. Please try again.";
-        }
-        setErrorMessage(msg);
-        return;
-      }
-    }
-
-    // Look for user in our ledger profiles list by email alone
-    let user = existingUsers.find(
-      u => u.email.toLowerCase() === email.toLowerCase()
-    );
-
-    if (!user) {
-      // Check fallbacks for default accounts
-      if (email.toLowerCase() === 'eleanor@vance.io') {
-        user = existingUsers.find(u => u.email === 'eleanor@vance.io');
-      } else if (email.toLowerCase() === 'chen@metrocardio.org') {
-        user = existingUsers.find(u => u.email === 'chen@metrocardio.org');
-      } else if (email.toLowerCase() === 'lin@neurohealth.com') {
-        user = existingUsers.find(u => u.email === 'lin@neurohealth.com');
-      }
-    }
-
-    if (user) {
-      await triggerOtpFlow(user, 'LOGIN');
-    } else {
-      if (isDemo) {
-        setIsLoading(false);
-        setErrorMessage(`Demo account metadata was not found. Please re-seed the database.`);
-      } else {
-        // Automatically reconstruct/generate the ledger profile and keys on successful login!
-        try {
-          const namePrefix = email.split('@')[0];
-          const displayName = namePrefix.charAt(0).toUpperCase() + namePrefix.slice(1);
-          const keys = generateKeyPair(displayName);
-          
-          const emailPrefix = email.split('@')[0].toLowerCase().replace(/[^a-z0-9]/g, '');
-          const autoUser: UserProfile = {
-            id: `user-${emailPrefix}`,
-            email,
-            name: displayName,
-            role,
-            publicKey: keys.publicKey,
-            privateKey: keys.privateKey,
-            createdAt: new Date().toISOString(),
-            passcode: password,
-            ...(role === 'DOCTOR' ? { licenceNumber: `LIC-${Math.floor(10000 + Math.random() * 90000)}-AUTO`, specialty: 'General Practice' } : {})
-          };
-
-          onRegisterUser(autoUser);
-          await triggerOtpFlow(autoUser, 'LOGIN');
-        } catch (genErr: any) {
-          setIsLoading(false);
-          setErrorMessage(genErr.message || "Failed to dynamically reconstruct ledger profile keys.");
-        }
-      }
+    try {
+      const authKey = await deriveAuthKey(password, email);
+      const data = await api.post('/api/auth/login', { email, role, authKey });
+      startOtpStep(data, 'LOGIN_VERIFY');
+    } catch (err: any) {
+      setErrorMessage(err.message || 'Sign-in failed.');
+    } finally {
+      setIsLoading(false);
     }
   };
 
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMessage('');
-    
+
     if (!name || !email || !password) {
       setErrorMessage('Please fill in all mandatory fields.');
       return;
     }
-
+    if (password.length < MIN_PASSCODE_LENGTH) {
+      setErrorMessage(`Your passcode must be at least ${MIN_PASSCODE_LENGTH} characters. It protects your private key, so make it strong.`);
+      return;
+    }
     if (role === 'DOCTOR' && !licenseNumber) {
       setErrorMessage('Medical registration or state license number is required for Clinician role verification.');
       return;
     }
 
-    await triggerOtpFlow(null, 'REGISTER');
+    setIsLoading(true);
+    try {
+      // Keys are generated in this browser. Only the public key and the
+      // passcode-encrypted private key are sent to the server.
+      const keys = await generateUserKeys();
+      const [authKey, encryptedPrivateKey] = await Promise.all([
+        deriveAuthKey(password, email),
+        wrapPrivateKey(keys.privateKey, password),
+      ]);
+      const data = await api.post('/api/auth/register', {
+        email,
+        role,
+        name,
+        authKey,
+        publicKey: keys.publicKey,
+        encryptedPrivateKey,
+        ...(role === 'DOCTOR' ? { licenceNumber: licenseNumber, specialty } : {}),
+      });
+      setGeneratedKeys(keys);
+      startOtpStep(data, 'REGISTER_VERIFY');
+    } catch (err: any) {
+      setErrorMessage(err.message || 'Registration failed.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleResend = async () => {
+    if (!challengeId) return;
+    setErrorMessage('');
+    try {
+      const data = await api.post('/api/auth/resend', { challengeId });
+      setSimulatedOtp(data.devOtp ?? null);
+      setOtpTimer(30);
+    } catch (err: any) {
+      setErrorMessage(err.message);
+    }
   };
 
   const handleVerifyOtp = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMessage('');
-    
+
     const otp = otpCode.join('');
     if (otp.length !== 6) {
       setErrorMessage('Please enter the full 6-digit OTP code.');
@@ -269,52 +159,22 @@ export default function AuthPage({
 
     setIsVerifyingOtp(true);
     try {
-      const response = await fetch('/api/otp/verify', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, otp }),
-      });
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data.error || 'Failed to verify OTP code.');
+      const { user } = await api.post('/api/auth/verify', { challengeId, otp });
+
+      if (otpMode === 'REGISTER_VERIFY') {
+        // Show the key card once before entering the dashboard.
+        setRegisteredUser(user);
+        setOtpMode('NONE');
+        return;
       }
 
-      if (otpMode === 'LOGIN_VERIFY') {
-        const user = existingUsers.find(
-          u => u.email.toLowerCase() === email.toLowerCase()
-        );
-        if (user) {
-          clearAuthPersistence();
-          onAuthSuccess(user);
-        } else {
-          // Check for fallback demo accounts
-          let fallbackUser: UserProfile | undefined;
-          if (email.toLowerCase() === 'eleanor@vance.io') {
-            fallbackUser = existingUsers.find(u => u.email === 'eleanor@vance.io');
-          } else if (email.toLowerCase() === 'chen@metrocardio.org') {
-            fallbackUser = existingUsers.find(u => u.email === 'chen@metrocardio.org');
-          } else if (email.toLowerCase() === 'lin@neurohealth.com') {
-            fallbackUser = existingUsers.find(u => u.email === 'lin@neurohealth.com');
-          }
-          if (fallbackUser) {
-            clearAuthPersistence();
-            onAuthSuccess(fallbackUser);
-          } else {
-            setErrorMessage('User mapping state lost. Please try logging in again.');
-            setOtpMode('NONE');
-          }
-        }
-      } else if (otpMode === 'REGISTER_VERIFY') {
-        setIsLoading(true);
-        setOtpMode('NONE');
-        setTimeout(() => {
-          const keys = generateKeyPair(name);
-          setGeneratedKeys(keys);
-          setIsLoading(false);
-        }, 1200);
-      }
+      // Unlock the private key in this browser with the passcode.
+      const privateKey = await unwrapPrivateKey(user.encryptedPrivateKey, password);
+      setPassword('');
+      onAuthSuccess({ ...user, privateKey });
     } catch (err: any) {
       setErrorMessage(err.message || 'OTP verification failed.');
+      if (/sign in again|expired/i.test(err.message || '')) setOtpMode('NONE');
     } finally {
       setIsVerifyingOtp(false);
     }
@@ -346,7 +206,7 @@ export default function AuthPage({
       setOtpCode(newCode);
     }
   };
-  
+
   const handleOtpPaste = (e: React.ClipboardEvent<HTMLInputElement>) => {
     e.preventDefault();
     const pastedData = e.clipboardData.getData('text').trim();
@@ -360,45 +220,10 @@ export default function AuthPage({
     }
   };
 
-  const finalizeRegistration = async () => {
-    if (!generatedKeys) return;
-
-    setIsLoading(true);
-    setErrorMessage('');
-
-    try {
-      await createUserWithEmailAndPassword(auth, email, password);
-
-      const emailPrefix = email.split('@')[0].toLowerCase().replace(/[^a-z0-9]/g, '');
-      const newUser: UserProfile = {
-        id: `user-${emailPrefix}`,
-        email,
-        name,
-        role,
-        publicKey: generatedKeys.publicKey,
-        privateKey: generatedKeys.privateKey,
-        createdAt: new Date().toISOString(),
-        passcode: password,
-        ...(role === 'DOCTOR' ? { licenceNumber: licenseNumber, specialty } : {})
-      };
-
-      onRegisterUser(newUser);
-      clearAuthPersistence();
-      onAuthSuccess(newUser);
-    } catch (err: any) {
-      let msg = err.message || "Failed to register user to Firebase Authentication.";
-      if (err.code === 'auth/email-already-in-use') {
-        msg = "This email is already registered in our Authentication system.";
-      } else if (err.code === 'auth/invalid-email') {
-        msg = "The email address is invalid.";
-      } else if (err.code === 'auth/weak-password') {
-        msg = "The passcode must be at least 6 characters long.";
-      }
-      setErrorMessage(msg);
-      setGeneratedKeys(null);
-    } finally {
-      setIsLoading(false);
-    }
+  const finalizeRegistration = () => {
+    if (!generatedKeys || !registeredUser) return;
+    setPassword('');
+    onAuthSuccess({ ...registeredUser, privateKey: generatedKeys.privateKey });
   };
 
   const copyToClipboard = (text: string, type: 'PUBLIC' | 'PRIVATE') => {
@@ -425,7 +250,7 @@ export default function AuthPage({
         <div className="flex flex-col items-center">
           <button
             id="auth-back-btn"
-            onClick={() => { clearAuthPersistence(); onBack(); }}
+            onClick={onBack}
             className="self-start inline-flex items-center gap-1.5 text-xs font-mono text-blue-600 hover:text-blue-800 transition-all bg-blue-50/50 hover:bg-blue-100/50 px-3 py-1.5 rounded-lg border border-blue-200 cursor-pointer shadow-sm"
           >
             <ArrowLeft className="h-3.5 w-3.5" /> Back to Home
@@ -435,14 +260,14 @@ export default function AuthPage({
             <Logo className="object-contain w-full h-full p-1" />
           </div>
           <h2 className="mt-4 text-center text-2xl font-extrabold font-display text-teal-700 tracking-tight">
-            {generatedKeys 
+            {(registeredUser && generatedKeys) 
               ? 'Your Keys are Generated' 
               : mode === 'LOGIN' 
                 ? 'Sign In to Private Vault' 
                 : 'Initialize Primacy Keys'}
           </h2>
           <p className="mt-1 text-center text-xs md:text-sm font-sans text-zinc-500 max-w-sm">
-            {generatedKeys 
+            {(registeredUser && generatedKeys) 
               ? 'Primacy ownership starts here. Save these credentials securely.' 
               : mode === 'LOGIN' 
                 ? 'Unlock your encrypted medical profile matching your secure roles.' 
@@ -454,14 +279,14 @@ export default function AuthPage({
         <div className="bg-white rounded-3xl border border-zinc-200 p-8 shadow-md">
           
           {/* CRITICAL: Generated Key Card Presentation Screen */}
-          {generatedKeys ? (
+          {(registeredUser && generatedKeys) ? (
             <div id="key-generator-handout" className="space-y-6">
               <div className="p-4 rounded-xl bg-teal-50 border border-teal-200 flex gap-3 text-sm text-teal-900">
                 <ShieldCheck className="h-5 w-5 shrink-0 mt-0.5 text-teal-650" />
                 <div>
                   <h4 className="font-bold font-display text-teal-950">Asymmetric Key Pair Provisioned!</h4>
                   <p className="text-xs text-teal-700/90 font-sans mt-0.5">
-                    Your keypair is simulated using public keys for ledger mapping and private keys for digital consent signatures. Only YOU hold the private key file.
+                    A real RSA-2048 key pair was generated in your browser. Your public key encrypts your records and lets the server verify your consent signatures; your private key decrypts and signs. It is stored only encrypted with your passcode.
                   </p>
                 </div>
               </div>
@@ -503,7 +328,7 @@ export default function AuthPage({
                   {generatedKeys.privateKey}
                 </pre>
                 <p className="text-[10px] text-amber-700/90 font-mono italic mt-1 bg-amber-50 rounded p-1.5 border border-amber-200/50">
-                  * Clinical Warning: This key is never transited. Loss of this local cryptographic key will permanently disconnect your vault records.
+                  This key was generated in your browser. The server only stores a copy encrypted with your passcode, so if you forget your passcode your records cannot be recovered.
                 </p>
               </div>
 
@@ -529,10 +354,10 @@ export default function AuthPage({
                 <div className="p-3.5 rounded-xl bg-blue-50 border border-blue-200 text-xs text-blue-950">
                   <div className="font-bold flex items-center gap-1.5 text-blue-900">
                     <span className="h-2 w-2 rounded-full bg-blue-500 animate-pulse" />
-                    Ledger Sandboxed Env
+                    Local development mode
                   </div>
                   <p className="text-blue-700 mt-1 text-[11px] leading-relaxed">
-                    No SMTP mail server is configured. For development convenience, use the generated OTP: <strong className="font-mono text-sm bg-white/80 border border-blue-200 px-2 py-0.5 rounded text-blue-950 font-bold tracking-wider select-all">{simulatedOtp}</strong>
+                    Email is not configured and OTP_DEV_ECHO is on, so the code is shown here. This never happens in production: <strong className="font-mono text-sm bg-white/80 border border-blue-200 px-2 py-0.5 rounded text-blue-950 font-bold tracking-wider select-all">{simulatedOtp}</strong>
                   </p>
                 </div>
               )}
@@ -581,7 +406,7 @@ export default function AuthPage({
                     <span>Resend verification code in <strong className="font-mono">{otpTimer}s</strong></span>
                   ) : (
                     <button
-                      onClick={() => triggerOtpFlow(null, otpMode === 'LOGIN_VERIFY' ? 'LOGIN' : 'REGISTER')}
+                      onClick={handleResend}
                       className="text-blue-600 hover:text-blue-700 font-bold underline cursor-pointer"
                     >
                       Resend Verification Code
@@ -590,7 +415,7 @@ export default function AuthPage({
                 </div>
                 <div>
                   <button
-                    onClick={() => { setOtpMode('NONE'); setErrorMessage(''); }}
+                    onClick={() => { setOtpMode('NONE'); setErrorMessage(''); setChallengeId(null); }}
                     className="text-blue-400 hover:text-blue-600 text-xs font-semibold hover:underline cursor-pointer"
                   >
                     Go Back & Edit Details

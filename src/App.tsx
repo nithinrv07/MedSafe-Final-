@@ -1,350 +1,337 @@
-import React, { useState, useEffect } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { UserProfile, MedicalRecord, AccessRequest, AuditLog } from './types.js';
-import { generateHash } from './utils/cryptoSim.js';
+import { api } from './api.js';
+import {
+  consentMessage,
+  decryptRecordPayload,
+  encryptRecordPayload,
+  RecordPayload,
+  rewrapRecordKey,
+  signMessage,
+  unwrapPrivateKey,
+} from './utils/vaultCrypto.js';
 
 // Components
 const LandingPage = React.lazy(() => import('./components/LandingPage.jsx'));
 const AuthPage = React.lazy(() => import('./components/AuthPage.jsx'));
 const PatientDashboard = React.lazy(() => import('./components/PatientDashboard.jsx'));
 const DoctorDashboard = React.lazy(() => import('./components/DoctorDashboard.jsx'));
-import { Loader2, RefreshCw } from 'lucide-react';
+import { Loader2, RefreshCw, Lock } from 'lucide-react';
+
+type Screen = 'LANDING' | 'AUTH' | 'PATIENT_DASH' | 'DOCTOR_DASH';
+type ServerRecord = Omit<MedicalRecord, 'title' | 'details' | 'medicines' | 'photoUrls' | 'photoUrl' | 'encryptedContent' | 'locked'>;
+
+const POLL_MS = 3000;
+
+function cipherPreview(r: { iv: string; ciphertext: string }) {
+  return `AES-256-GCM | iv=${r.iv} | ${r.ciphertext.slice(0, 120)}${r.ciphertext.length > 120 ? '…' : ''}`;
+}
 
 export default function App() {
-  // Screens state: 'LANDING' | 'AUTH' | 'PATIENT_DASH' | 'DOCTOR_DASH'
-  const [screen, setScreen] = useState<'LANDING' | 'AUTH' | 'PATIENT_DASH' | 'DOCTOR_DASH'>(() => {
-    try {
-      const savedScreen = localStorage.getItem('medsafe_screen');
-      if (savedScreen) return savedScreen as any;
+  const [screen, setScreen] = useState<Screen>('LANDING');
+  const [authMode, setAuthMode] = useState<'LOGIN' | 'REGISTER'>('LOGIN');
 
-      const savedUser = localStorage.getItem('medsafe_user');
-      if (savedUser) {
-        const user = JSON.parse(savedUser) as UserProfile;
-        return user.role === 'PATIENT' ? 'PATIENT_DASH' : 'DOCTOR_DASH';
-      }
-    } catch (e) {
-      console.error('Failed to parse user role for initial screen', e);
-    }
-    return 'LANDING';
-  });
-  const [authMode, setAuthMode] = useState<'LOGIN' | 'REGISTER'>(() => {
-    return (localStorage.getItem('medsafe_authmode') as any) || 'LOGIN';
-  });
-
-  // Persist screen and authMode state to survive page refresh
-  useEffect(() => {
-    localStorage.setItem('medsafe_screen', screen);
-  }, [screen]);
-
-  useEffect(() => {
-    localStorage.setItem('medsafe_authmode', authMode);
-  }, [authMode]);
-
-  // Shared state databases (hydrated via Real-Time API syncing)
+  // Server state (already filtered by the server to what this user may see)
   const [users, setUsers] = useState<UserProfile[]>([]);
+  const [serverRecords, setServerRecords] = useState<ServerRecord[]>([]);
   const [records, setRecords] = useState<MedicalRecord[]>([]);
   const [requests, setRequests] = useState<AccessRequest[]>([]);
   const [logs, setLogs] = useState<AuditLog[]>([]);
-  const [currentUser, setCurrentUser] = useState<UserProfile | null>(() => {
-    try {
-      const savedUser = localStorage.getItem('medsafe_user');
-      if (savedUser) {
-        const user = JSON.parse(savedUser) as UserProfile;
-        const privateKey = sessionStorage.getItem('medsafe_private_key');
-        if (privateKey) {
-          user.privateKey = privateKey;
-        }
-        return user;
-      }
-      return null;
-    } catch (e) {
-      console.error('Failed to parse user from localStorage', e);
-      return null;
-    }
-  });
+  const [currentUser, setCurrentUser] = useState<UserProfile | null>(null);
 
   const [isLoadingState, setIsLoadingState] = useState(true);
   const [isSyncing, setIsSyncing] = useState(false);
   const [networkError, setNetworkError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
 
-  // Sync state with server
-  const fetchServerState = async (showIndicator = false) => {
-    if (showIndicator) setIsSyncing(true);
-    try {
-      const response = await fetch('/api/state');
-      if (!response.ok) {
-        throw new Error(`Failed to fetch state from server: ${response.statusText}`);
-      }
-      const data = await response.json();
-      setUsers(data.users || []);
-      setRecords(data.records || []);
-      setRequests(data.requests || []);
-      setLogs(data.logs || []);
-      setNetworkError(null);
+  const versionRef = useRef(0);
+  const decryptCache = useRef(new Map<string, RecordPayload>());
 
-      // Keep current user updated in real-time if logged in
-      if (currentUser) {
-        const freshUser = (data.users || []).find((u: UserProfile) => u.id === currentUser.id);
-        if (freshUser) {
-          // Keep private key if client-side simulation stored it
-          setCurrentUser({
-            ...freshUser,
-            privateKey: currentUser.privateKey || freshUser.privateKey
-          });
-        }
-      }
-    } catch (err: any) {
-      console.error('Error syncing real-time state:', err);
-      setNetworkError('Server disconnected. Attempting to reconnect...');
-    } finally {
-      setIsLoadingState(false);
-      setIsSyncing(false);
-    }
+  // The private key lives only in memory. After a reload the user re-enters their passcode.
+  const privateKey = currentUser?.privateKey;
+
+  const resetClientState = () => {
+    versionRef.current = 0;
+    decryptCache.current.clear();
+    setUsers([]);
+    setServerRecords([]);
+    setRecords([]);
+    setRequests([]);
+    setLogs([]);
   };
 
-  // Poll state every 2 seconds for real-time synchronization between Patient and Doctor interfaces
+  // Restore an existing session on load.
   useEffect(() => {
-    fetchServerState();
-    const interval = setInterval(() => {
-      fetchServerState();
-    }, 2000);
-    return () => clearInterval(interval);
-  }, [currentUser?.id]);
-
-  // Synchronize currentUser with localStorage/sessionStorage for session persistence and key security
-  useEffect(() => {
-    if (currentUser) {
-      if (currentUser.privateKey) {
-        sessionStorage.setItem('medsafe_private_key', currentUser.privateKey);
-      } else {
-        sessionStorage.removeItem('medsafe_private_key');
-      }
-      const userCopy = { ...currentUser };
-      delete userCopy.privateKey;
-      localStorage.setItem('medsafe_user', JSON.stringify(userCopy));
-    } else {
-      localStorage.removeItem('medsafe_user');
-      sessionStorage.removeItem('medsafe_private_key');
-    }
-  }, [currentUser]);
-
-  // Appends a new audit log with an immutable SHA-256 simulation block
-  const handleAddLog = async (action: string, status: 'SUCCESS' | 'WARNING' | 'ALERT', details: string) => {
-    const rawContent = `${action}-${details}-${Date.now()}`;
-    const newLog: AuditLog = {
-      id: `log-${Math.random().toString(36).substring(2, 9)}`,
-      timestamp: new Date().toISOString(),
-      action,
-      actorName: currentUser ? currentUser.name : 'Primacy Ledger',
-      actorRole: currentUser ? currentUser.role : 'PATIENT',
-      status,
-      hash: generateHash(rawContent),
-      details
-    };
-
-    // Optimistic local state update
-    setLogs(prev => [newLog, ...prev]);
-
-    try {
-      await fetch('/api/logs', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newLog),
-      });
-    } catch (err) {
-      console.error('Failed to post audit log:', err);
-    }
-  };
-
-  // Auth screen pipeline triggers
-  const handleAuthSuccess = (user: UserProfile) => {
-    setCurrentUser(user);
-    handleAddLog(
-      'User Authentication Success',
-      'SUCCESS',
-      `Session established for authenticated ${user.role === 'PATIENT' ? 'Patient' : 'Clinician'}: ${user.email}`
-    );
-    if (user.role === 'PATIENT') {
-      setScreen('PATIENT_DASH');
-    } else {
-      setScreen('DOCTOR_DASH');
-    }
-  };
-
-  const handleRegisterUser = async (newUser: UserProfile) => {
-    // Optimistic update
-    setUsers(prev => [...prev, newUser]);
-    try {
-      await fetch('/api/users/register', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newUser),
-      });
-    } catch (err) {
-      console.error('Failed to register user to ledger:', err);
-    }
-  };
-
-  // Records pipeline triggers
-  const handleAddRecord = async (newRec: MedicalRecord) => {
-    // Optimistic update
-    setRecords(prev => [newRec, ...prev]);
-    try {
-      await fetch('/api/records', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newRec),
-      });
-    } catch (err) {
-      console.error('Failed to save record to ledger:', err);
-    }
-  };
-
-  const handleUpdateRecord = async (updatedRec: MedicalRecord) => {
-    setRecords(prev => prev.map(r => r.id === updatedRec.id ? updatedRec : r));
-    try {
-      await fetch('/api/records/update', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(updatedRec),
-      });
-    } catch (err) {
-      console.error('Failed to update record on ledger:', err);
-    }
-  };
-
-  // Requests pipeline triggers
-  const handleUpdateRequestStatus = async (
-    requestId: string,
-    status: 'APPROVED' | 'REJECTED' | 'REVOKED',
-    digitalSignature?: string
-  ) => {
-    // Optimistic update
-    setRequests(prev =>
-      prev.map(req => {
-        if (req.id === requestId) {
-          return {
-            ...req,
-            status,
-            decidedAt: new Date().toISOString(),
-            ...(digitalSignature ? { digitalSignature } : {})
-          };
-        }
-        return req;
+    api
+      .get('/api/auth/me')
+      .then(({ user }) => {
+        setCurrentUser(user);
+        setScreen(user.role === 'PATIENT' ? 'PATIENT_DASH' : 'DOCTOR_DASH');
       })
-    );
+      .catch(() => setScreen('LANDING'))
+      .finally(() => setIsLoadingState(false));
+  }, []);
 
-    try {
-      await fetch('/api/requests/update', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ requestId, status, digitalSignature }),
-      });
-    } catch (err) {
-      console.error('Failed to update access request:', err);
-    }
-  };
+  const fetchServerState = useCallback(
+    async (force = false) => {
+      if (!currentUser) return;
+      if (force) setIsSyncing(true);
+      try {
+        const data = await api.get(`/api/state${!force && versionRef.current ? `?since=${versionRef.current}` : ''}`);
+        setNetworkError(null);
+        if (!data) return; // 204: nothing changed
+        versionRef.current = data.version;
+        setUsers(data.users);
+        setServerRecords(data.records);
+        setRequests(data.requests);
+        setLogs(data.logs);
+      } catch (err: any) {
+        if (err.status === 401) {
+          setCurrentUser(null);
+          resetClientState();
+          setScreen('AUTH');
+          return;
+        }
+        setNetworkError('Server disconnected. Attempting to reconnect...');
+      } finally {
+        setIsSyncing(false);
+      }
+    },
+    [currentUser?.id]
+  );
 
-  // Submit doctor access requests dynamically
-  const handleDoctorSubmitRequest = async (patientId: string, patientName: string, justification: string) => {
+  useEffect(() => {
     if (!currentUser) return;
-    
-    const newRequest: AccessRequest = {
-      id: `req-${Math.random().toString(36).substring(2, 9)}`,
-      patientId,
-      patientName,
-      doctorId: currentUser.id,
-      doctorName: currentUser.name,
-      doctorSpecialty: currentUser.specialty || 'General Practitioner',
-      requestedPurpose: justification,
-      status: 'PENDING',
-      requestedAt: new Date().toISOString()
+    fetchServerState(true);
+    const interval = setInterval(() => fetchServerState(), POLL_MS);
+    return () => clearInterval(interval);
+  }, [currentUser?.id, fetchServerState]);
+
+  // Decrypt records in the browser whenever the ciphertexts or the key change.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const out: MedicalRecord[] = [];
+      for (const r of serverRecords) {
+        const cacheKey = `${r.id}:${r.hash}`;
+        let payload = decryptCache.current.get(cacheKey);
+        if (!payload && privateKey && currentUser) {
+          try {
+            payload = await decryptRecordPayload(r, currentUser.id, privateKey);
+            decryptCache.current.set(cacheKey, payload);
+          } catch {
+            /* stays locked */
+          }
+        }
+        out.push({
+          ...r,
+          title: payload?.title ?? 'Encrypted record',
+          details: payload?.details ?? '',
+          medicines: payload?.medicines ?? [],
+          photoUrls: payload?.photoUrls ?? [],
+          photoUrl: payload?.photoUrls?.[0],
+          encryptedContent: cipherPreview(r),
+          locked: !payload,
+        });
+      }
+      if (!cancelled) setRecords(out);
+    })();
+    return () => {
+      cancelled = true;
     };
+  }, [serverRecords, privateKey, currentUser?.id]);
 
-    // Optimistic update
-    setRequests(prev => [newRequest, ...prev]);
-
+  // Runs a server action, then refreshes state. Errors are shown in a banner.
+  const runAction = async (fn: () => Promise<unknown>) => {
+    setActionError(null);
     try {
-      await fetch('/api/requests/submit', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newRequest),
-      });
-    } catch (err) {
-      console.error('Failed to submit access request:', err);
+      await fn();
+    } catch (err: any) {
+      console.error(err);
+      setActionError(err.message || 'Something went wrong');
+    } finally {
+      await fetchServerState(true);
     }
   };
 
-  // Patient submit connection request (pre-authorized or pending)
-  const handlePatientSubmitRequest = async (newRequest: AccessRequest) => {
-    // Optimistic update
-    setRequests(prev => [newRequest, ...prev]);
-    try {
-      await fetch('/api/requests/submit', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newRequest),
-      });
-    } catch (err) {
-      console.error('Failed to submit access request:', err);
-    }
+  const requireKey = () => {
+    if (!currentUser || !privateKey) throw new Error('Unlock your vault with your passcode first.');
+    return { me: currentUser, key: privateKey };
   };
 
-  const handleLogout = () => {
-    if (currentUser) {
-      handleAddLog(
-        'User Logged Out',
-        'SUCCESS',
-        `Secure session closed for ${currentUser.email}. Credentials keys uncommitted from active memory.`
+  const publicKeyOf = (userId: string) => {
+    const u = users.find(x => x.id === userId);
+    if (!u) throw new Error('Unknown user');
+    return u.publicKey;
+  };
+
+  /** Everyone who should be able to read a patient's records: the patient and approved doctors. */
+  const readersFor = (patientId: string, extra: string[] = []) => {
+    const ids = new Set([patientId, ...extra]);
+    requests.filter(r => r.patientId === patientId && r.status === 'APPROVED').forEach(r => ids.add(r.doctorId));
+    return Object.fromEntries([...ids].map(id => [id, publicKeyOf(id)]));
+  };
+
+  const payloadOf = (rec: MedicalRecord): RecordPayload => ({
+    title: rec.title,
+    details: rec.details,
+    medicines: rec.medicines || [],
+    photoUrls: rec.photoUrls?.length ? rec.photoUrls : rec.photoUrl ? [rec.photoUrl] : [],
+  });
+
+  const handleAddLog = (action: string, status: 'SUCCESS' | 'WARNING' | 'ALERT', details: string, patientId?: string) => {
+    api.post('/api/logs', { action, status, details: details.slice(0, 1000), ...(patientId ? { patientId } : {}) }).catch(err => console.error('Failed to post audit log:', err));
+  };
+
+  const handleAuthSuccess = (user: UserProfile) => {
+    resetClientState();
+    setCurrentUser(user);
+    setScreen(user.role === 'PATIENT' ? 'PATIENT_DASH' : 'DOCTOR_DASH');
+  };
+
+  const handleAddRecord = (newRec: MedicalRecord) =>
+    runAction(async () => {
+      const { me } = requireKey();
+      const readers = readersFor(newRec.patientId, [me.id]);
+      const enc = await encryptRecordPayload(payloadOf(newRec), readers);
+      await api.post('/api/records', {
+        id: newRec.id,
+        patientId: newRec.patientId,
+        category: newRec.category,
+        doctorName: newRec.doctorName,
+        date: newRec.date,
+        ...enc,
+      });
+    });
+
+  const handleUpdateRecord = (rec: MedicalRecord) =>
+    runAction(async () => {
+      requireKey();
+      const enc = await encryptRecordPayload(payloadOf(rec), readersFor(rec.patientId));
+      await api.post('/api/records/update', { id: rec.id, category: rec.category, doctorName: rec.doctorName, ...enc });
+    });
+
+  /** Re-wraps every one of the patient's record keys for a doctor. */
+  const envelopesForDoctor = async (doctorId: string) => {
+    const { me, key } = requireKey();
+    const doctorKey = publicKeyOf(doctorId);
+    const envelopes: Record<string, string> = {};
+    for (const r of serverRecords.filter(x => x.patientId === me.id)) {
+      const mine = r.keyEnvelopes[me.id];
+      if (!mine) throw new Error('Missing your own key for a record; please refresh and try again.');
+      envelopes[r.id] = await rewrapRecordKey(mine, key, doctorKey);
+    }
+    return envelopes;
+  };
+
+  const handleUpdateRequestStatus = (requestId: string, status: 'APPROVED' | 'REJECTED' | 'REVOKED') =>
+    runAction(async () => {
+      const req = requests.find(r => r.id === requestId);
+      if (!req) throw new Error('Request not found');
+
+      if (currentUser?.role === 'DOCTOR') {
+        await api.post('/api/requests/update', { requestId, status: 'REVOKED' });
+        return;
+      }
+
+      const { key } = requireKey();
+      const decidedAt = new Date().toISOString();
+      const digitalSignature = await signMessage(
+        consentMessage({ requestId, patientId: req.patientId, doctorId: req.doctorId, status, decidedAt }),
+        key
       );
+      await api.post('/api/requests/update', {
+        requestId,
+        status,
+        decidedAt,
+        digitalSignature,
+        ...(status === 'APPROVED' ? { envelopes: await envelopesForDoctor(req.doctorId) } : {}),
+      });
+    });
+
+  const handleDoctorSubmitRequest = (patientId: string, _patientName: string, justification: string) =>
+    runAction(() => api.post('/api/requests/submit', { patientId, requestedPurpose: justification }));
+
+  // Patient grants a doctor access directly (signed, with record keys).
+  const handlePatientSubmitRequest = (newRequest: AccessRequest) =>
+    runAction(async () => {
+      const { me, key } = requireKey();
+      const decidedAt = new Date().toISOString();
+      const digitalSignature = await signMessage(
+        consentMessage({ requestId: newRequest.id, patientId: me.id, doctorId: newRequest.doctorId, status: 'APPROVED', decidedAt }),
+        key
+      );
+      await api.post('/api/requests/submit', {
+        id: newRequest.id,
+        doctorId: newRequest.doctorId,
+        requestedPurpose: newRequest.requestedPurpose,
+        decidedAt,
+        digitalSignature,
+        envelopes: await envelopesForDoctor(newRequest.doctorId),
+      });
+    });
+
+  const handleLogout = async () => {
+    try {
+      await api.post('/api/auth/logout');
+    } catch {
+      /* ignore */
     }
     setCurrentUser(null);
+    resetClientState();
     setScreen('LANDING');
-    localStorage.removeItem('medsafe_screen');
-    localStorage.removeItem('medsafe_authmode');
-  };
-
-  // Trigger manual force synchronization
-  const handleForceSync = () => {
-    fetchServerState(true);
   };
 
   if (isLoadingState) {
     return (
       <div className="min-h-screen bg-zinc-50 flex flex-col items-center justify-center space-y-4">
         <Loader2 className="h-8 w-8 text-teal-600 animate-spin" />
-        <p className="text-sm font-mono text-zinc-500">Synchronizing Primacy Ledger Nodes...</p>
+        <p className="text-sm font-mono text-zinc-500">Connecting to MedSafe...</p>
       </div>
     );
   }
 
   return (
     <div id="app-root-frame" className="min-h-screen bg-zinc-50 text-zinc-900 font-sans antialiased relative">
-      
-      {/* Real-time sync and server connectivity status badge */}
-      <div className="fixed bottom-4 right-4 z-50 flex items-center gap-2">
-        {networkError ? (
-          <div className="px-3 py-1.5 rounded-full bg-red-100 text-red-700 border border-red-200 text-xs font-mono flex items-center gap-1.5 shadow-sm animate-pulse">
-            <span className="h-1.5 w-1.5 rounded-full bg-red-500" />
-            {networkError}
-          </div>
-        ) : (
-          <button 
-            onClick={handleForceSync}
-            disabled={isSyncing}
-            className="px-3 py-1.5 rounded-full bg-white text-zinc-600 border border-zinc-200 hover:border-zinc-300 text-xs font-mono flex items-center gap-1.5 shadow-sm cursor-pointer hover:bg-zinc-50 active:scale-95 transition-all"
-            title="Real-Time Node Sync Active (Click to force refresh)"
-          >
-            <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
-            {isSyncing ? 'Syncing...' : 'Live Ledger Active'}
-            <RefreshCw className={`h-3 w-3 ml-0.5 text-zinc-400 ${isSyncing ? 'animate-spin' : ''}`} />
-          </button>
-        )}
-      </div>
+
+      {/* Sync / connectivity badge */}
+      {currentUser && (
+        <div className="fixed bottom-4 right-4 z-50 flex items-center gap-2">
+          {networkError ? (
+            <div className="px-3 py-1.5 rounded-full bg-red-100 text-red-700 border border-red-200 text-xs font-mono flex items-center gap-1.5 shadow-sm animate-pulse">
+              <span className="h-1.5 w-1.5 rounded-full bg-red-500" />
+              {networkError}
+            </div>
+          ) : (
+            <button
+              onClick={() => fetchServerState(true)}
+              disabled={isSyncing}
+              className="px-3 py-1.5 rounded-full bg-white text-zinc-600 border border-zinc-200 hover:border-zinc-300 text-xs font-mono flex items-center gap-1.5 shadow-sm cursor-pointer hover:bg-zinc-50 active:scale-95 transition-all"
+              title="Live sync active (click to refresh)"
+            >
+              <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
+              {isSyncing ? 'Syncing...' : 'Live Sync Active'}
+              <RefreshCw className={`h-3 w-3 ml-0.5 text-zinc-400 ${isSyncing ? 'animate-spin' : ''}`} />
+            </button>
+          )}
+        </div>
+      )}
+
+      {actionError && (
+        <div role="alert" className="fixed top-4 left-1/2 -translate-x-1/2 z-[60] max-w-lg px-4 py-3 rounded-xl bg-red-50 border border-red-200 text-sm text-red-800 shadow-lg flex items-start gap-3">
+          <span className="flex-1">{actionError}</span>
+          <button onClick={() => setActionError(null)} className="text-red-500 hover:text-red-700 font-bold cursor-pointer" aria-label="Dismiss">×</button>
+        </div>
+      )}
+
+      {currentUser && !privateKey && (screen === 'PATIENT_DASH' || screen === 'DOCTOR_DASH') && (
+        <UnlockVault user={currentUser} onUnlocked={key => setCurrentUser({ ...currentUser, privateKey: key })} onLogout={handleLogout} />
+      )}
 
       <React.Suspense fallback={
         <div className="min-h-screen bg-zinc-50 flex flex-col items-center justify-center space-y-4">
           <Loader2 className="h-8 w-8 text-teal-600 animate-spin" />
-          <p className="text-sm font-mono text-zinc-500">Decrypting interface nodes...</p>
+          <p className="text-sm font-mono text-zinc-500">Loading...</p>
         </div>
       }>
         {screen === 'LANDING' && (
@@ -356,10 +343,9 @@ export default function App() {
 
         {screen === 'AUTH' && (
           <AuthPage
+            key={authMode}
             onBack={() => setScreen('LANDING')}
             onAuthSuccess={handleAuthSuccess}
-            existingUsers={users}
-            onRegisterUser={handleRegisterUser}
             initialMode={authMode}
           />
         )}
@@ -395,6 +381,59 @@ export default function App() {
           />
         )}
       </React.Suspense>
+    </div>
+  );
+}
+
+/** Shown after a page reload: the session is still valid but the private key must be unlocked again. */
+function UnlockVault({ user, onUnlocked, onLogout }: { user: UserProfile; onUnlocked: (key: string) => void; onLogout: () => void }) {
+  const [passcode, setPasscode] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!user.encryptedPrivateKey) return;
+    setBusy(true);
+    setError('');
+    try {
+      onUnlocked(await unwrapPrivateKey(user.encryptedPrivateKey, passcode));
+    } catch {
+      setError('Incorrect passcode.');
+    } finally {
+      setBusy(false);
+      setPasscode('');
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[70] bg-zinc-900/60 backdrop-blur-sm flex items-center justify-center p-4">
+      <form onSubmit={submit} className="bg-white rounded-2xl border border-zinc-200 shadow-xl p-6 w-full max-w-sm space-y-4">
+        <div className="flex items-center gap-2 text-zinc-900 font-bold">
+          <Lock className="h-5 w-5 text-teal-600" /> Unlock your vault
+        </div>
+        <p className="text-xs text-zinc-500">
+          Your private key is never stored unencrypted. Enter your passcode to decrypt it in this browser, {user.name}.
+        </p>
+        <input
+          type="password"
+          autoFocus
+          required
+          value={passcode}
+          onChange={e => setPasscode(e.target.value)}
+          placeholder="Passcode"
+          className="w-full bg-zinc-50 border border-zinc-200 rounded-xl py-2.5 px-3 text-sm focus:outline-none focus:border-teal-400"
+        />
+        {error && <p className="text-xs text-red-600">{error}</p>}
+        <div className="flex gap-2">
+          <button type="submit" disabled={busy} className="flex-1 rounded-xl bg-zinc-900 text-white py-2.5 text-sm font-bold cursor-pointer disabled:opacity-60">
+            {busy ? 'Unlocking…' : 'Unlock'}
+          </button>
+          <button type="button" onClick={onLogout} className="rounded-xl border border-zinc-200 px-4 text-sm cursor-pointer">
+            Sign out
+          </button>
+        </div>
+      </form>
     </div>
   );
 }

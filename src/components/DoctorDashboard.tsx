@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Shield, Key, Search, FileLock, ClipboardList, Send, Sparkles, Check, X, ShieldAlert, LogOut, Radio, RefreshCw, Layers, PlusCircle, Unlock, Lock, AlertTriangle, ChevronRight, QrCode, ScanLine, UploadCloud, Image, Camera, Paperclip, ZoomIn } from 'lucide-react';
 import { UserProfile, MedicalRecord, AccessRequest, AuditLog } from '../types';
-import { decryptRecord, checkDrugInteractions, generateHash } from '../utils/cryptoSim';
+import { checkDrugInteractions } from '../utils/drugInteractions';
 import QRScanner from './QRScanner';
 import Logo from './Logo';
 
@@ -14,7 +14,7 @@ interface DoctorDashboardProps {
   onLogout: () => void;
   onSubmitRequest: (patientId: string, patientName: string, justification: string) => void;
   onAddRecord: (record: MedicalRecord) => void;
-  onAddLog: (action: string, status: 'SUCCESS' | 'WARNING' | 'ALERT', details: string) => void;
+  onAddLog: (action: string, status: 'SUCCESS' | 'WARNING' | 'ALERT', details: string, patientId?: string) => void;
   onRevokeAccessDirectly: (requestId: string) => void;
 }
 
@@ -107,11 +107,6 @@ export default function DoctorDashboard({
     if (!patient) return;
 
     onSubmitRequest(patient.id, patient.name, requestJustification);
-    onAddLog(
-      'Access Request Filed',
-      'SUCCESS',
-      `Doctor ${user.name} filed security ledger request for user ${patient.email}: "${requestJustification}"`
-    );
 
     setSuccessRequestMessage(`Your authorization request has been published for ${patient.name}. Direct them to approve using their Primacy Private Key.`);
     setSelectedPatientId('');
@@ -136,19 +131,19 @@ export default function DoctorDashboard({
       return;
     }
 
-    const patientUser = allUsers.find(u => u.id === req.patientId);
-    const targetPrivateKey = patientUser?.privateKey || 'MOCK_PEM_PRIVATE_KEY';
-
-    if (finalKey !== targetPrivateKey) {
+    // Doctors decrypt with their OWN private key: the patient re-wrapped each
+    // record key for this doctor's public key when approving the request.
+    if (!user.privateKey || finalKey !== user.privateKey.trim()) {
       setDecryptionError({
         ...decryptionError,
-        [rec.id]: 'Validation Failure: Decryption key mismatch.'
+        [rec.id]: 'This private key does not match your account.'
       });
       return;
     }
 
     try {
-      const decodedPlain = decryptRecord(rec.encryptedContent, finalKey);
+      if (rec.locked) throw new Error('No decryption key has been shared with you for this record.');
+      const decodedPlain = rec.details;
       
       setDecryptedRecordIds({
         ...decryptedRecordIds,
@@ -161,9 +156,10 @@ export default function DoctorDashboard({
       setDecryptionError(errs);
 
       onAddLog(
-        'Vault Record Decrypted',
+        'Vault Record Viewed',
         'SUCCESS',
-        `Doctor Decryption validated. Opened record "${rec.title}" with valid digital transaction token.`
+        `${user.name} viewed a decrypted record of a patient.`,
+        rec.patientId
       );
     } catch (err: any) {
       setDecryptionError({
@@ -201,7 +197,7 @@ export default function DoctorDashboard({
         onAddLog(
           'AI Contraindication Detected',
           evaluation.severity === 'CRITICAL' ? 'ALERT' : 'WARNING',
-          `AI Interceptor scan raised warning of type ${evaluation.severity} for active drugs compilation: ${compiledMedList.join(', ')}.`
+          `Drug interaction check raised a ${evaluation.severity} warning for: ${compiledMedList.join(', ')}.`
         );
       }
     }, 1200);
@@ -217,7 +213,7 @@ export default function DoctorDashboard({
           onAddLog(
             'Prescribing Image Appended',
             'SUCCESS',
-            `Dr. Robert Chen uploaded local scan document: ${file.name} to buffer storage prior to pre-encryption.`
+            `${user.name} attached a scan (${file.name}) to a new record before encryption.`
           );
         };
         reader.readAsDataURL(file);
@@ -234,30 +230,29 @@ export default function DoctorDashboard({
       ? newPrescDrugs.split(',').map(m => m.trim()).filter(Boolean)
       : [];
 
-    const simulatedEncrypted = `CIPHER_VAULT_AES_256:[IV:CH-${Math.floor(Math.random()*10000)}]:` + btoa(newPrescDetails);
-    const simulatedHash = generateHash(newPrescDetails);
-
+    // Encrypted with AES-256-GCM for the patient and this doctor in App before upload.
     const createdRecord: MedicalRecord = {
-      id: `rec-${Math.random().toString(36).substring(2, 9)}`,
+      id: `rec-${crypto.randomUUID()}`,
       patientId: selectedGrantReq.patientId,
+      authorId: user.id,
+      createdAt: new Date().toISOString(),
+      ciphertext: '',
+      iv: '',
+      keyEnvelopes: {},
+      readers: [],
       title: newPrescTitle,
       category: newPrescCategory,
       doctorName: user.name,
       date: new Date().toISOString().split('T')[0],
       details: newPrescDetails,
-      encryptedContent: simulatedEncrypted,
-      hash: simulatedHash,
+      encryptedContent: '',
+      hash: '',
       medicines: finalDrugsList,
       photoUrl: newPrescPhotoUrls[0] || undefined,
       photoUrls: newPrescPhotoUrls
     };
 
     onAddRecord(createdRecord);
-    onAddLog(
-      'Audit Ledger Record Appended',
-      'SUCCESS',
-      `Dr. Robert Chen updated patient roster ledger. Appended new encrypted record with document attachment: "${newPrescTitle}".`
-    );
 
     // Reset
     setNewPrescTitle('');
@@ -876,19 +871,19 @@ export default function DoctorDashboard({
                                           ) : (
                                             <div className="p-3 bg-zinc-100/60 border border-zinc-200 rounded-xl text-left space-y-2 animate-scale-up max-w-xs shrink-0">
                                               <label className="block text-[8px] font-mono text-zinc-550 uppercase font-bold">
-                                                Provide Private Key PEM:
+                                                Your own private key (PEM):
                                               </label>
                                               <textarea
                                                 value={recordKeyInputs[rec.id] || ''}
                                                 onChange={(e) => setRecordKeyInputs({ ...recordKeyInputs, [rec.id]: e.target.value })}
-                                                placeholder="Paste private key block or use auto-fill below..."
+                                                placeholder="Paste your private key or use auto-fill below..."
                                                 rows={3}
                                                 className="w-full text-[9px] font-mono p-1.5 border border-zinc-250 rounded bg-white text-zinc-805 placeholder-zinc-400 focus:outline-none focus:ring-1 focus:ring-teal-500"
                                               />
                                               <div className="flex justify-between items-center gap-2">
                                                 <button
                                                   type="button"
-                                                  onClick={() => setRecordKeyInputs({ ...recordKeyInputs, [rec.id]: user.privateKey || 'MOCK_PEM_PRIVATE_KEY' })}
+                                                  onClick={() => setRecordKeyInputs({ ...recordKeyInputs, [rec.id]: user.privateKey || '' })}
                                                   className="py-0.5 px-1 border border-zinc-200 rounded text-[7px] font-mono font-bold text-zinc-650 bg-white cursor-pointer hover:bg-zinc-50"
                                                 >
                                                   ⚡ Auto-fill

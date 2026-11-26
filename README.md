@@ -1,228 +1,161 @@
-# 🛡️ MedSafe — Sovereign Medical Locker & Prescription Intelligence Network
+# 🛡️ MedSafe — Patient-Owned Medical Locker
 
-[![React 19](https://img.shields.io/badge/React-19.0.1-blue.svg?style=flat&logo=react)](https://react.dev)
-[![Vite 6](https://img.shields.io/badge/Vite-6.2.3-646CFF.svg?style=flat&logo=vite)](https://vite.dev)
-[![TailwindCSS 4](https://img.shields.io/badge/TailwindCSS-4.0.0-06B6D4.svg?style=flat&logo=tailwindcss)](https://tailwindcss.com)
-[![TypeScript 5](https://img.shields.io/badge/TypeScript-5.8.2-3178C6.svg?style=flat&logo=typescript)](https://www.typescriptlang.org)
-[![Express](https://img.shields.io/badge/Express-4.21.2-000000.svg?style=flat&logo=express)](https://expressjs.com)
-[![Firebase](https://img.shields.io/badge/Firebase-12.15.0-FFCA28.svg?style=flat&logo=firebase)](https://firebase.google.com)
-[![Google Gemini API](https://img.shields.io/badge/Gemini_AI-2.0_Flash-orange.svg?style=flat&logo=google)](https://deepmind.google/technologies/gemini)
+[![React 19](https://img.shields.io/badge/React-19-blue.svg?style=flat&logo=react)](https://react.dev)
+[![Vite 6](https://img.shields.io/badge/Vite-6-646CFF.svg?style=flat&logo=vite)](https://vite.dev)
+[![TypeScript 5](https://img.shields.io/badge/TypeScript-5.8-3178C6.svg?style=flat&logo=typescript)](https://www.typescriptlang.org)
+[![Express](https://img.shields.io/badge/Express-4-000000.svg?style=flat&logo=express)](https://expressjs.com)
+[![Web Crypto](https://img.shields.io/badge/Web_Crypto-RSA--OAEP_%2B_AES--GCM-0f766e.svg?style=flat)](https://developer.mozilla.org/docs/Web/API/SubtleCrypto)
 
-**MedSafe** (also known as the *Primacy Patient Medical Ledger*) is a next-generation, patient-centric medical locker system. It addresses the privacy, security, and interoperability challenges of modern health systems by putting medical data ownership entirely back in the hands of the patient. 
+**MedSafe** is a patient-centric medical record locker. Records are encrypted in the patient's browser, the server stores only ciphertext, and a doctor can read a patient's records only after the patient approves the doctor's request with a digital signature.
 
-Through client-side asymmetric cryptography, OTP multi-factor authentication, real-time node synchronization, clinical intelligence, and AI-powered document processing, MedSafe ensures that a patient's medical history is encrypted by default and only decrypted when explicit, digitally-signed consent is authorized.
+> **Project status:** a student/hackathon project. The cryptography is real (standard Web Crypto algorithms), but the system has not had a professional security audit and is not certified for real patient data (HIPAA, GDPR, DISHA, etc.). The drug-interaction checker is a small reference list for demonstration, not a clinical tool.
 
 ---
 
-## 🏗️ Architecture & Security Model
+## 🏗️ Security model
 
-MedSafe operates under a **Zero-Knowledge / Sovereign Identity** paradigm:
+All cryptography uses the browser's built-in **Web Crypto API** (`crypto.subtle`), and the same code (`src/utils/vaultCrypto.ts`) runs on the server for signature checks.
 
-1. **Client-Side Key Generation**: Upon account creation, the patient's browser generates a custom **2048-bit RSA Asymmetric Key Pair**. The private key resides only in client-side secure memory (never uploaded to the server).
-2. **Zero-Knowledge Encryption**: When medical records (prescriptions, lab tests, diagnoses) are uploaded, they are encrypted *in the browser* using the patient's Public Key before transit. The server only sees and stores the ciphertext (`CIPHER_VAULT_AES_256:[IV]:encoded`).
-3. **Explicit Consent & Delegation**: Doctors cannot read medical records by default. To request read permission, they must submit an **Access Request** detailing their clinical justification.
-4. **Digital Consent Signature**: The patient approves or revokes request status using their private key to compute a cryptographic digital signature (`SHA256-RSA-SIG:...`).
-5. **Decryption on Demand**: Once access is approved, the doctor's browser uses the digital signature and patient details to decrypt the records locally. The server never holds, sees, or processes the decrypted content.
+| What | How |
+| :--- | :--- |
+| **User keys** | Each user gets an **RSA-2048** key pair generated **in their browser** at sign-up. The same key is used for RSA-OAEP (encryption) and RSA-PSS (signatures). |
+| **Private key storage** | The private key is encrypted with **AES-256-GCM** under a key derived from the user's passcode (**PBKDF2-SHA256, 310,000 iterations**). Only that encrypted blob is stored on the server, so the user can sign in from another device. The unlocked key is kept only in memory: after a page reload the user re-enters their passcode. |
+| **Passcode** | Never sent to the server. The browser sends a separate PBKDF2-derived *auth key* (different salt), which the server hashes again with **scrypt**. Knowing the auth key does not help decrypt the private key. |
+| **Records** | Each record (title, details, medicines, photos) is encrypted with its own random **AES-256-GCM** key. That key is wrapped with **RSA-OAEP** once per reader: the patient, and each doctor the patient has approved. The server sees only metadata (category, date, doctor name) and ciphertext. |
+| **Consent** | Approving, declining or revoking a request is signed by the patient (**RSA-PSS / SHA-256**). The server **verifies the signature** with the patient's public key before acting. On approval, the patient's browser re-wraps every record key for the doctor's public key. On revoke, the server deletes the doctor's wrapped keys. |
+| **Sign-in** | Passcode check, then a 6-digit email code (cryptographically random, 10-minute expiry, 5 attempts, 30-second resend limit). Failed passcodes lock the account for 15 minutes after 5 tries. Sessions use an **HttpOnly, SameSite=Strict** cookie (Secure in production). |
+| **Authorization** | Every API route checks the session and role. Patients can only see and edit their own data. Doctors can only see records whose key was shared with them **and** whose request is still approved. Doctors cannot approve their own requests, and records can only be shared with approved doctors. |
+| **Audit log** | Each entry is written by the server with the authenticated actor, and linked to the previous one in a **SHA-256 hash chain** (`GET /api/logs/verify` checks it). Users only see entries that concern them. |
+
+**Known limitations**
+- Revoking access stops a doctor from fetching records from then on, but cannot "un-see" data they already decrypted or saved.
+- If a user forgets their passcode their records cannot be recovered (there is no key escrow).
+- The server serves the JavaScript that does the encryption, so a compromised server could ship malicious code. This is true of every web-based end-to-end encrypted app.
+- Sessions and rate limits are kept in memory: restarting the server signs everyone out.
 
 ```mermaid
 sequenceDiagram
     autonumber
     actor Patient
     actor Doctor
-    participant Client as Client Browser
-    participant Server as Express Server (Ledger Node)
+    participant PB as Patient browser
+    participant DB as Doctor browser
+    participant S as Server
 
-    Note over Patient, Client: Account Registration
-    Patient->>Client: Register Profile
-    Client->>Client: Generate RSA 2048-bit Key Pair
-    Client->>Server: Save Profile (Public Key Only)
-
-    Note over Doctor, Client: Requesting Access
-    Doctor->>Client: Request access to Patient Records
-    Client->>Server: Submit Access Request (Pending)
-    Server-->>Client: Poll State Updates (Sync)
-    
-    Note over Patient, Client: Approving Request
-    Patient->>Client: Enter Passcode & Authorize Access
-    Client->>Client: Sign with Patient Private Key
-    Client->>Server: Approve Request (with Digital Signature)
-
-    Note over Doctor, Client: Decrypting Records
-    Server-->>Client: Access Request APPROVED (Sync)
-    Client->>Client: Decrypt medical record content using Patient Keys
-    Doctor->>Client: View Decrypted Medical Records
+    Patient->>PB: Register
+    PB->>PB: Generate RSA-2048 key pair, encrypt private key with passcode
+    PB->>S: Public key + encrypted private key + auth key (no passcode)
+    Patient->>PB: Add record
+    PB->>PB: AES-256-GCM encrypt, wrap record key for patient
+    PB->>S: Ciphertext only
+    Doctor->>DB: Request access (with purpose)
+    DB->>S: Access request (PENDING)
+    Patient->>PB: Approve
+    PB->>PB: Sign decision (RSA-PSS), re-wrap record keys for doctor
+    PB->>S: Signature + wrapped keys
+    S->>S: Verify signature with patient's public key
+    DB->>S: Fetch records
+    S-->>DB: Ciphertext + doctor's wrapped keys
+    DB->>DB: Decrypt with doctor's own private key
 ```
 
 ---
 
-## 🔄 End-to-End Core Workflows
+## 🔄 Features
 
-### 1. Patient Registration & Keycard Provisioning
-* **Flow**: The patient registers via the Auth interface.
-* **Cryptography**: The client browser generates a public/private keypair using `generateKeyPair` in [cryptoSim.ts](file:///c:/Users/user/Desktop/CIT%20Projects/Med-Safe/MedSafe/src/utils/cryptoSim.ts). 
-* **Keycard Generation**: The patient receives a visual keycard containing their Public and Private keys. The Private Key is protected behind a local security passcode.
-* **Server Action**: The server registers the profile metadata along with the *Public Key*. The *Private Key* is excluded from transmission.
-
-### 2. Multi-Factor OTP Authentication & SMTP Integration
-* **Flow**: User logins trigger a 6-digit verification code.
-* **SMTP Delivery**: The server uses Nodemailer to send a rich HTML email to the user's address.
-* **Local Fallback**: If no SMTP credentials are provided, the system falls back to printing the OTP code directly to the server terminal to facilitate testing.
-
-### 3. Doctor Search, Dossier QR Scanning, and Justification Requests
-* **Flow**: Doctors can search patients in the network directory.
-* **Quick Lookup**: Doctors can scan a patient's physical or digital QR card using one of three modes:
-  * **Interactive Simulation Station**: Fast-track testing by simulating holographic laser line scans.
-  * **Live Camera**: WebRTC stream decoding frames in real-time via `jsQR` with audio chime confirmations.
-  * **File Upload**: Parsing screenshots of patient QR passes directly.
-* **Justified Access Request**: Upon identification, the doctor submits a clinical justification request (e.g., cardiologist reviewing medication list).
-
-### 4. Digital Consent Signing & Revocation
-* **Flow**: Patients receive real-time push alerts on their dashboard when a doctor requests access.
-* **Action**: To approve, the patient enters their passcode to unlock the private key and signs the request.
-* **Cryptographic Proof**: The signature is generated via `SHA-256` hashing and RSA simulation.
-* **Revocation**: The patient can revoke the active permissions at any time, instantly invalidating the doctor's decryption handshake on the next sync interval.
-
-### 5. Browser-Side AES-256 Record Encryption & Decryption
-* **Flow**: When a record is added (by the patient or an approved doctor), it is encrypted using the patient's public key.
-* **Data Flow**: Plaintext $\rightarrow$ `btoa` encoding $\rightarrow$ salt + IV generation $\rightarrow$ cipher wrapping $\rightarrow$ server database payload.
-* **Interactive Visualizer**: The UI renders an `EncryptionVisualizer` component that displays the text scrambling and transition from plaintext to ciphertext in real-time.
-
-### 6. AI-Powered OCR Analysis (Google Gemini integration)
-* **Flow**: Patients or doctors can drag and drop scanned reports (like chest X-rays, MRI scans, or prescription receipts).
-* **AI Processing**: The image is read as a Base64 payload and dispatched to **Gemini 2.0 Flash**.
-* **Structured Output**: Gemini parses the raw image text and returns a validated JSON payload containing the structured title, medical category, doctor name, clinical findings, and prescribed drugs.
-* **Local Simulation fallback**: If no API key is present, the app matches filenames (e.g. `mri.png`, `xray.png`, `ecg.png`) and executes a mock clinical analyzer.
-
-### 7. Clinical Contraindication Engine (Drug-to-Drug Interaction)
-* **Flow**: When a doctor attempts to prescribe a new medicine, the system runs an automatic contraindication check against existing treatments.
-* **Safety Rules**: Checks against a built-in medical database (e.g., combining Nitroglycerin with Sildenafil raises a `CRITICAL` alert; Simvastatin with Amiodarone raises a `MODERATE` warning).
-* **Clinician Action**: The dashboard highlights critical risks and displays immediate resolution guidelines before the prescription can be finalized.
-
-### 8. Immutable Cryptographic Audit Logs
-* **Flow**: Every event (login, key unlock, consent updates, records creation) writes a block to the system ledger.
-* **Integrity**: Each ledger record calculates a cryptographic SHA-256 signature combining action details, timestamps, and actor role to simulate blockchain ledger integrity.
+1. **Registration & key card** — keys are generated in the browser; the user sees their key card once.
+2. **Email OTP sign-in** — Nodemailer over SMTP with TLS certificate checking. In local development without SMTP the code is printed in the server console (and shown on screen only if `OTP_DEV_ECHO=true`). In production, if email cannot be sent, sign-in fails instead of exposing the code.
+3. **Doctor search & QR passes** — the patient's QR pass is generated locally (no third-party QR service). Doctors scan it by camera (`jsQR`), image upload, or a demo simulation; matching is exact.
+4. **Signed consent** — approve / decline / revoke, all signature-verified on the server. Patients can also pre-authorize a doctor directly.
+5. **Encrypted records** — the in-app visualizer shows real AES-GCM output.
+6. **AI document reading (optional)** — uploads are sent to Google Gemini (`GEMINI_MODEL`, default `gemini-2.5-flash`) to pre-fill the form. **Privacy note:** this sends the image to Google; without `GEMINI_API_KEY` a local sample template is used instead.
+7. **Drug-interaction check** — matches drug *classes* (e.g. any benzodiazepine + any opioid, brand or generic names) against a curated list of ~17 well-known interactions and reports all matches. It is a demo, not a substitute for a clinical interaction database.
+8. **Hash-chained audit log** — see the security model above.
 
 ---
 
-## 🛠️ Tech Stack & Libraries
+## 🛠️ Tech stack
 
-### Frontend (Client SPA)
-* **React 19**: Powered by React hooks, contexts, and lazy-loading routes.
-* **Vite 6**: Rapid hot module replacement (HMR) and custom code-splitting vendor chunks.
-* **TailwindCSS 4**: Custom styling system supporting dark-mode elements and premium glassmorphic UI.
-* **Motion (Framer Motion)**: Hardware-accelerated UI transitions and micro-animations.
-* **jsQR**: Fast canvas-based image scanning for reading QR passes.
-* **Lucide React**: High-quality SVG vector icon set.
+- **Frontend:** React 19, Vite 6, Tailwind CSS 4, Motion, jsQR, qrcode, Lucide icons.
+- **Backend:** Express, zod (request validation), Nodemailer, Google GenAI SDK, optional Firebase Realtime Database (per-item writes) for persistence.
+- **Crypto:** Web Crypto API only — no custom algorithms.
+- **Tests:** Vitest (crypto, drug interactions, and API authorization tests).
 
-### Backend (Ledger Node)
-* **Express & Node.js**: REST API endpoints for user records, consents, and logging.
-* **tsx**: Real-time TypeScript runtime support for testing and execution.
-* **Nodemailer**: Email distribution client with support for custom SMTP servers and SSL handshakes.
-* **Google GenAI SDK**: Integrates the `gemini-2.0-flash` model for structured JSON schema extraction.
-* **Firebase Realtime Database**: Synchronizes database states remotely if a project URL is specified in the configurations.
-* **esbuild**: Bundler for compiling the server script into a single, high-performance Node file (`dist/server.cjs`).
-
----
-
-## 📁 Project Structure
+## 📁 Project structure
 
 ```text
-MedSafe/
-├── .env                  # Local secrets and connection strings (ignored by Git)
-├── .env.example          # Environment setup template
-├── index.html            # Entry HTML document (loads Google Inter/Outfit fonts)
-├── package.json          # Dependency and build definitions
-├── server.ts             # Express application & Ledger API endpoints
-├── tsconfig.json         # TypeScript configuration
-├── vite.config.ts        # Vite configuration & Rollup code-splitting chunks
-├── replace-logo.js       # Logo utility script
-├── public/               # Static assets
-└── src/
-    ├── main.tsx          # React mount point
-    ├── App.tsx           # Global state, router, and live sync polling loop
-    ├── firebase.ts       # Firebase client configuration
-    ├── types.ts          # Core TypeScript interfaces (UserProfile, MedicalRecord, etc.)
-    ├── utils/
-    │   └── cryptoSim.ts  # RSA keygen, AES-256 ciphers, and Contraindication engine
-    └── components/
-        ├── AuthPage.tsx             # Login, registration, and OTP validation screens
-        ├── DoctorDashboard.tsx      # Patient index, justification request form, and records creator
-        ├── PatientDashboard.tsx     # Vault keys, consent management, and audit log viewer
-        ├── QRScanner.tsx            # Camera stream and file QR parser
-        ├── EncryptionVisualizer.tsx # Visual comparison of plaintext vs ciphertext
-        ├── LandingPage.tsx          # Marketing hero section, workflows preview, and step walkthroughs
-        └── Logo.tsx                 # Branding vector logo component
+├── server.ts                 # Entry point: loads config, store, Vite (dev) or static files (prod)
+├── server/
+│   ├── app.ts                # All API routes: auth, sessions, authorization, validation
+│   ├── store.ts              # In-memory data, hash-chained audit log, demo seed, legacy migration
+│   ├── persistence.ts        # Memory or Firebase Realtime Database backends
+│   ├── mailer.ts             # OTP email
+│   └── ocr.ts                # Gemini document reading + offline fallback
+├── src/
+│   ├── App.tsx               # Session restore, polling, client-side encrypt/decrypt/sign
+│   ├── api.ts                # fetch wrapper
+│   ├── types.ts
+│   ├── utils/
+│   │   ├── vaultCrypto.ts    # RSA-OAEP / RSA-PSS / AES-GCM / PBKDF2 (browser + Node)
+│   │   └── drugInteractions.ts
+│   └── components/           # Landing, Auth, Patient & Doctor dashboards, QR scanner, ...
+├── tests/                    # Vitest suites
+├── database.rules.json       # Firebase RTDB rules template (backend account only)
+└── .env.example
 ```
 
 ---
 
-## ⚙️ Environment Configuration
+## ⚙️ Configuration
 
-To run the application, copy the example environment file and configure the variables:
+Copy `.env.example` to `.env`. All variables are optional for local development.
 
-```bash
-cp .env.example .env
-```
+| Variable | Purpose |
+| :--- | :--- |
+| `PORT` | Server port (default `3000`). |
+| `SMTP_SERVER`, `SMTP_PORT`, `EMAIL`, `APP_PASSWORD` | SMTP settings for OTP emails. **Required in production.** |
+| `OTP_DEV_ECHO` | `true` shows the OTP on screen when email is not configured. Ignored in production. |
+| `GEMINI_API_KEY`, `GEMINI_MODEL` | Optional AI document reading. |
+| `FIREBASE_DATABASE_URL` | Optional persistent storage. If set, `BACKEND_EMAIL` and `BACKEND_PASSWORD` are required. Lock the database down with `database.rules.json` (put your backend email in it). |
+| `SEED_DEMO_DATA` | Create the demo accounts on an empty database. Default: on in development, off in production. |
+| `ALLOW_DEMO_RESET` | Allow `POST /api/reset` in development. Always off in production. |
 
-| Variable | Description | Default Value |
-| :--- | :--- | :--- |
-| `PORT` | Local server port | `3000` |
-| `GEMINI_API_KEY` | Google Gemini API key (for structured OCR) | *Optional* (falls back to mock scanner) |
-| `FIREBASE_DATABASE_URL` | Firebase database endpoint | *Optional* (falls back to in-memory DB) |
-| `SMTP_SERVER` | Mail server hostname | `smtp.gmail.com` |
-| `SMTP_PORT` | Mail server port | `587` |
-| `EMAIL` | Sender email address for OTP | `medsafeotp@gmail.com` |
-| `APP_PASSWORD` | Gmail App Password (to bypass OAuth) | *Optional* (falls back to terminal logging) |
+**Upgrading from the old version:** on first start, data in the old format is migrated automatically. Accounts get real key pairs (encrypted with their existing passcode), records are re-encrypted, approved requests are re-signed, and all plaintext passcodes, fake keys and plaintext record contents are deleted.
 
----
+## 🚀 Getting started
 
-## 🚀 Getting Started
+Requires **Node.js 20+**.
 
-### 1. Prerequisites
-Ensure you have **Node.js (v18+)** and **npm** installed on your system.
-
-### 2. Installation
-Install the project dependencies:
 ```bash
 npm install
 ```
 
-### 3. Running the Development Server
-Launch the Express server and Vite frontend simultaneously:
 ```bash
-npm run dev
+OTP_DEV_ECHO=true npm run dev
 ```
-Open [http://localhost:3000](http://localhost:3000) in your web browser.
 
-### 4. Compiling for Production
-Build both the React client assets and bundle the Express server file:
+Open http://localhost:3000.
+
+```bash
+npm test
+```
+
 ```bash
 npm run build
 ```
-This generates:
-* Client-side assets in `dist/`
-* Compiled backend script in `dist/server.cjs`
 
-To start the production server:
 ```bash
-npm run start
+npm start
 ```
 
----
+`npm start` runs in production mode (`NODE_ENV=production`): HTTPS is required for the Secure session cookie and for camera access, and SMTP must be configured.
 
-## 👥 Pre-seeded Demonstration Profiles
+## 👥 Demo accounts
 
-The database initializes with three accounts pre-seeded for testing. All accounts share the passcode and password `password`.
+Created automatically in development. Passcode for all three: `password`.
 
-| Name | Role | Email | Details |
+| Name | Role | Email | Notes |
 | :--- | :--- | :--- | :--- |
-| **Eleanor Vance** | Patient | `eleanor@vance.io` | Pre-seeded with 2 encrypted vault records. |
-| **Dr. Robert Chen** | Doctor | `chen@metrocardio.org` | Cardiology license. Has an approved access request for Eleanor. |
-| **Dr. Sarah Lin** | Doctor | `lin@neurohealth.com` | Neurology license. Has a pending access request for Eleanor. |
-
----
-
-## 🔒 Production Security Recommendations
-* **HTTPS enforced**: Production deployment requires TLS/SSL. WebRTC camera permissions require a secure context (HTTPS) to function.
-* **Secure Memory Bounds**: Private keys should be stored in SessionStorage rather than LocalStorage to guard against Cross-Site Scripting (XSS) extraction.
-* **Secret Rotation**: Rotate SMTP passwords and API keys regularly. Ensure the server firewall blocks access to internal ledger state endpoints.
+| Eleanor Vance | Patient | `eleanor@vance.io` | 2 encrypted records |
+| Dr. Robert Chen | Doctor (Cardiology) | `chen@metrocardio.org` | Approved access to Eleanor |
+| Dr. Sarah Lin | Doctor (Neurology) | `lin@neurohealth.com` | Pending request for Eleanor |
